@@ -1,0 +1,43 @@
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime data and process state
+data/
+agent-data/
+collector-data/
+cluster-data/
+*.pid
+*.log
+*.out
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Local test and package staging
+.package-staging/
+.zip-verify*/
+monitor-test/
+npu-smi-info.txt
+
+# Built archives and images
+*.zip
+*.tar
+*.tar.gz
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+

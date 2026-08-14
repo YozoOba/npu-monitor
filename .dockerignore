@@ -1,0 +1,10 @@
+.git
+.package-staging
+__pycache__
+**/__pycache__
+*.pyc
+*.zip
+data
+cluster-data
+agent-data
+
