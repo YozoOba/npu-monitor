@@ -14,6 +14,18 @@ def format_number(value):
 
 def print_summary(snapshot):
     counts = snapshot['node_counts']
+    registered = snapshot.get(
+        'registered_expected_cards', snapshot.get('expected_cards', 0)
+    )
+    fresh = snapshot.get(
+        'fresh_collected_cards', snapshot.get('active_collected_cards', 0)
+    )
+    fresh_expected = snapshot.get('fresh_expected_cards', registered)
+    last_known = snapshot.get('last_known_collected_cards', fresh)
+    fleet_freshness = snapshot.get(
+        'fleet_freshness_coverage_percent', snapshot.get('coverage_percent', 0.0)
+    )
+    reporting_coverage = snapshot.get('reporting_sample_coverage_percent')
     print('NPU Cluster Summary')
     print('=' * 92)
     print(
@@ -21,25 +33,39 @@ def print_summary(snapshot):
             total=snapshot['total_nodes'], **counts
         )
     )
+    print('Registered capacity: {} cards  Last known: {} cards'.format(
+        registered, last_known
+    ))
     print(
-        'Cards: {}/{}  coverage={}%%  utilization={}%%  HBM={}%%  busy={} idle={}'.format(
-            snapshot['active_collected_cards'], snapshot['expected_cards'],
-            format_number(snapshot['coverage_percent']),
+        'Fresh samples: {}/{}  fleet freshness={}%%  reporting completeness={}%%'.format(
+            fresh, registered, format_number(fleet_freshness),
+            format_number(reporting_coverage),
+        )
+    )
+    print(
+        'Current utilization={}%%  HBM={}%%  busy={} idle={}  reporting expected={}'.format(
             format_number(snapshot['utilization_avg']),
             format_number(snapshot['hbm_percent']),
             snapshot.get('busy_cards', 0), snapshot.get('idle_cards', 0),
+            fresh_expected,
         )
     )
     print('Generated: {}'.format(snapshot['generated_at']))
     print('-' * 92)
     print('{:<22} {:<11} {:>8} {:>10} {:>10} {:>9}  {}'.format(
-        'NODE', 'STATE', 'CARDS', 'UTIL %', 'HBM %', 'AGE(s)', 'LAST SAMPLE'
+        'NODE', 'STATE', 'LAST CARDS', 'FRESH %', 'HBM %', 'AGE(s)', 'LAST SAMPLE'
     ))
     for node in snapshot['nodes']:
+        fresh_utilization = node.get('fresh_utilization_avg')
+        if 'fresh_utilization_avg' not in node and node['state'] in ('online', 'degraded'):
+            fresh_utilization = node.get('utilization_avg')
+        fresh_hbm = node.get('fresh_hbm_percent')
+        if 'fresh_hbm_percent' not in node and node['state'] in ('online', 'degraded'):
+            fresh_hbm = node.get('hbm_percent')
         print('{:<22} {:<11} {:>8} {:>10} {:>10} {:>9}  {}'.format(
             node['node_id'][:22], node['state'],
             '{}/{}'.format(node['collected_cards'], node['expected_cards']),
-            format_number(node['utilization_avg']), format_number(node['hbm_percent']),
+            format_number(fresh_utilization), format_number(fresh_hbm),
             node['age_seconds'], node['last_collected_at'] or '-',
         ))
 

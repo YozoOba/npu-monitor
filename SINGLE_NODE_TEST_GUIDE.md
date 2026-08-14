@@ -82,7 +82,7 @@ python3 test_tool.py
 预期输出：
 
 ```text
-Ran 12 tests
+Ran 14 tests
 OK
 
 Ran 14 tests
@@ -91,7 +91,7 @@ OK
 
 其中：
 
-- 12 项集群测试覆盖协议、SQLite、去重、冲突检测、HTTP 接收、补传队列和 Console；
+- 14 项集群测试覆盖协议、SQLite、去重、冲突检测、HTTP 接收、补传队列状态恢复和 Console；
 - 14 项原单机测试用于确认原有 `npu-smi` 解析、CSV 和进程逻辑没有回归；
 - 自动化测试使用临时目录，不会修改正式数据。
 
@@ -332,12 +332,14 @@ python3 -m console.cli \
   summary
 ```
 
-预期看到：
+预期看到的主要语义：
 
 ```text
 Nodes: 1
-Cards: 8/8
-coverage=100.00%
+Registered capacity: 8 cards
+Fresh samples: 8/8
+fleet freshness=100.00%
+reporting completeness=100.00%
 single-node-910b-01 online
 ```
 
@@ -405,7 +407,8 @@ http://SERVER_IP:28081/
 
 - 节点总数；
 - 在线、异常、过期和离线节点数；
-- 有效卡数和预期卡数；
+- 登记容量和新鲜卡样本数；
+- 舰队新鲜度和上报完整度；
 - 当前集群利用率；
 - HBM 使用率；
 - 最近 24 小时趋势；
@@ -457,8 +460,19 @@ python3 -m json.tool /work/monitor-test/agent/upload_health.json
 - `spool` 至少存在一个 JSON 文件；
 - `pending_samples` 大于 0；
 - `upload_health.json` 包含连接失败信息；
+- `upload_unavailable_since` 不为空；
+- `oldest_pending_age_seconds` 会随积压时间增加；
 - 本地 CSV 和采样状态仍然新增了一轮数据；
 - Agent 不会因为 Collector 不可用而删除本地数据。
+
+在 Collector 仍停止时再次启动 Agent，并检查状态没有因为进程重启丢失：
+
+```bash
+python3 -u -m agent.app --once
+python3 -m json.tool /work/monitor-test/agent/upload_health.json
+```
+
+预期 `last_success`、`consecutive_failures` 和 `upload_unavailable_since` 延续重启前的值，最老积压年龄继续增长。
 
 在终端 A 重新启动 Collector：
 
@@ -677,7 +691,7 @@ sample_count: greater than 0
 
 满足以下全部条件后，单机测试通过：
 
-- 12 项集群自动化测试全部通过；
+- 14 项集群自动化测试全部通过；
 - 14 项原单机回归测试全部通过；
 - 真实解析能够稳定识别 8 张 910B 卡；
 - 卡号、利用率和 HBM 与 `npu-smi info` 一致；

@@ -121,6 +121,27 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(later['node_counts']['offline'], 2)
         self.assertIsNone(later['utilization_avg'])
 
+    def test_snapshot_separates_registered_fresh_and_last_known_cards(self):
+        self.storage.ingest(normalized(), NOW)
+        snapshot = self.storage.build_snapshot(
+            120, 300, now=NOW + timedelta(seconds=121)
+        )
+        self.assertEqual(snapshot['snapshot_version'], 2)
+        self.assertEqual(snapshot['node_counts']['stale'], 1)
+        self.assertEqual(snapshot['registered_expected_cards'], 2)
+        self.assertEqual(snapshot['fresh_expected_cards'], 0)
+        self.assertEqual(snapshot['fresh_collected_cards'], 0)
+        self.assertEqual(snapshot['last_known_collected_cards'], 2)
+        self.assertEqual(snapshot['fleet_freshness_coverage_percent'], 0.0)
+        self.assertIsNone(snapshot['reporting_sample_coverage_percent'])
+        self.assertIsNone(snapshot['utilization_avg'])
+        self.assertEqual(snapshot['nodes'][0]['last_known_utilization_avg'], 50.0)
+        self.assertIsNone(snapshot['nodes'][0]['fresh_utilization_avg'])
+        # Snapshot v1 aliases remain available during rolling upgrades.
+        self.assertEqual(snapshot['expected_cards'], 2)
+        self.assertEqual(snapshot['active_collected_cards'], 0)
+        self.assertEqual(snapshot['coverage_percent'], 0.0)
+
     def test_history_series_is_bucketed(self):
         self.storage.ingest(normalized(), NOW)
         values = self.storage.history_series(
@@ -203,6 +224,55 @@ class HttpAndQueueTests(unittest.TestCase):
         worker.join(timeout=2)
         self.assertEqual(queue_usage(spool)[0], [])
         self.assertEqual(self.storage.health()['sample_count'], 1)
+        with open(os.path.join(self.temporary.name, 'upload_health.json'),
+                  encoding='utf-8') as handle:
+            health = json.load(handle)
+        self.assertIsNotNone(health['last_success'])
+        self.assertEqual(health['total_successes'], 1)
+        self.assertEqual(health['consecutive_failures'], 0)
+        self.assertIsNone(health['upload_unavailable_since'])
+        self.assertIsNone(health['oldest_pending_age_seconds'])
+
+    def test_upload_worker_restores_health_state_across_restart(self):
+        spool = os.path.join(self.temporary.name, 'persistent-spool')
+        rejected = os.path.join(self.temporary.name, 'persistent-rejected')
+        health_path = os.path.join(self.temporary.name, 'persistent-upload-health.json')
+        os.makedirs(spool)
+        enqueue(normalized(), spool, 10, 1024 * 1024)
+        persisted = {
+            'last_success': '2026-08-14T01:00:00+00:00',
+            'last_failure_at': '2026-08-14T02:00:00+00:00',
+            'upload_unavailable_since': '2026-08-14T02:00:00+00:00',
+            'last_error': 'upload failed: connection refused',
+            'consecutive_failures': 7,
+            'total_successes': 11,
+            'total_failures': 13,
+        }
+        with open(health_path, 'w', encoding='utf-8') as handle:
+            json.dump(persisted, handle)
+
+        worker = UploadWorker(
+            self.base_url, spool, rejected, health_path, timeout=2, batch_size=10
+        )
+        self.assertEqual(worker.last_success, persisted['last_success'])
+        self.assertEqual(worker.last_failure_at, persisted['last_failure_at'])
+        self.assertEqual(
+            worker.upload_unavailable_since, persisted['upload_unavailable_since']
+        )
+        self.assertEqual(worker.consecutive_failures, 7)
+        self.assertEqual(worker.total_successes, 11)
+        self.assertEqual(worker.total_failures, 13)
+        worker._write_health()
+
+        with open(health_path, encoding='utf-8') as handle:
+            restored = json.load(handle)
+        self.assertEqual(restored['consecutive_failures'], 7)
+        self.assertEqual(restored['last_success'], persisted['last_success'])
+        self.assertEqual(restored['upload_unavailable_since'],
+                         persisted['upload_unavailable_since'])
+        self.assertEqual(restored['pending_samples'], 1)
+        self.assertIsNotNone(restored['oldest_pending_at'])
+        self.assertGreaterEqual(restored['oldest_pending_age_seconds'], 0)
 
     def test_console_web_is_independently_served(self):
         self.post(payload()).close()
@@ -215,7 +285,10 @@ class HttpAndQueueTests(unittest.TestCase):
         console_url = 'http://127.0.0.1:{}'.format(console_server.server_address[1])
         try:
             with urlopen(console_url + '/', timeout=2) as response:
-                self.assertIn('NPU 集群状态', response.read().decode('utf-8'))
+                html = response.read().decode('utf-8')
+                self.assertIn('NPU 集群状态', html)
+                self.assertIn('登记容量', html)
+                self.assertIn('新鲜样本 / 容量', html)
             with urlopen(console_url + '/api/snapshot', timeout=2) as response:
                 self.assertEqual(json.loads(response.read())['total_nodes'], 1)
         finally:

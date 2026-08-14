@@ -30,9 +30,20 @@ class UploadWorker(threading.Thread):
         self.batch_size = batch_size
         self.stop_event = threading.Event()
         self.wakeup = threading.Event()
-        self.last_success = None
-        self.last_error = None
-        self.consecutive_failures = 0
+        persisted = self._load_health()
+        self.last_success = persisted.get('last_success')
+        self.last_failure_at = persisted.get('last_failure_at')
+        self.upload_unavailable_since = persisted.get('upload_unavailable_since')
+        self.last_error = persisted.get('last_error')
+        self.consecutive_failures = self._nonnegative_int(
+            persisted.get('consecutive_failures')
+        )
+        self.total_successes = self._nonnegative_int(
+            persisted.get('total_successes')
+        )
+        self.total_failures = self._nonnegative_int(
+            persisted.get('total_failures')
+        )
         try:
             self.rejected_total = sum(
                 name.endswith('.json') and not name.endswith('.reason.json')
@@ -40,6 +51,52 @@ class UploadWorker(threading.Thread):
             )
         except OSError:
             self.rejected_total = 0
+
+        files, _size = queue_usage(self.spool_dir)
+        if files:
+            oldest_at, _age = self._oldest_pending(files)
+            if (not self.upload_unavailable_since and
+                    (self.last_error or self.consecutive_failures)):
+                self.upload_unavailable_since = oldest_at
+        else:
+            self.last_error = None
+            self.consecutive_failures = 0
+            self.upload_unavailable_since = None
+
+    @staticmethod
+    def _nonnegative_int(value):
+        if isinstance(value, bool):
+            return 0
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    def _load_health(self):
+        try:
+            with open(self.health_file, 'r', encoding='utf-8') as handle:
+                value = json.load(handle)
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    @staticmethod
+    def _oldest_pending(files, now=None):
+        if not files:
+            return None, None
+        now = now or datetime.now(timezone.utc)
+        oldest_path = files[0]
+        name = os.path.basename(oldest_path)
+        try:
+            epoch = int(name.split('_', 1)[0])
+        except (TypeError, ValueError):
+            try:
+                epoch = int(os.path.getmtime(oldest_path))
+            except OSError:
+                return None, None
+        oldest = datetime.fromtimestamp(epoch, timezone.utc)
+        age = max(0, int((now - oldest).total_seconds()))
+        return oldest.isoformat(timespec='seconds'), age
 
     def notify(self):
         self.wakeup.set()
@@ -50,16 +107,23 @@ class UploadWorker(threading.Thread):
 
     def _write_health(self):
         files, size = queue_usage(self.spool_dir)
+        oldest_pending_at, oldest_pending_age = self._oldest_pending(files)
         write_json_atomic(self.health_file, {
             'status': (
-                'healthy' if not self.last_error and not self.rejected_total
+                'healthy' if not files and not self.last_error and not self.rejected_total
                 else 'degraded'
             ),
             'last_success': self.last_success,
+            'last_failure_at': self.last_failure_at,
+            'upload_unavailable_since': self.upload_unavailable_since,
             'last_error': self.last_error,
             'consecutive_failures': self.consecutive_failures,
+            'total_successes': self.total_successes,
+            'total_failures': self.total_failures,
             'pending_samples': len(files),
             'pending_bytes': size,
+            'oldest_pending_at': oldest_pending_at,
+            'oldest_pending_age_seconds': oldest_pending_age,
             'rejected_total': self.rejected_total,
             'updated_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
         })
@@ -90,6 +154,7 @@ class UploadWorker(threading.Thread):
         if not files:
             self.last_error = None
             self.consecutive_failures = 0
+            self.upload_unavailable_since = None
             self._write_health()
             return True
         for path in files[:self.batch_size]:
@@ -98,6 +163,8 @@ class UploadWorker(threading.Thread):
             except (OSError, ValueError) as exc:
                 reject_queued(path, self.rejected_dir, 'unreadable queue item: {}'.format(exc))
                 self.rejected_total += 1
+                self.total_failures += 1
+                self.last_failure_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
                 continue
             success, status, detail = self._post(sample)
             if success:
@@ -106,20 +173,34 @@ class UploadWorker(threading.Thread):
                 except OSError as exc:
                     self.last_error = 'uploaded but cannot remove queue item: {}'.format(exc)
                     self.consecutive_failures += 1
+                    self.total_failures += 1
+                    failure_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
+                    self.last_failure_at = failure_at
+                    if not self.upload_unavailable_since:
+                        self.upload_unavailable_since = failure_at
                     self._write_health()
                     return False
                 self.last_success = datetime.now(timezone.utc).isoformat(timespec='seconds')
                 self.last_error = None
                 self.consecutive_failures = 0
+                self.total_successes += 1
+                self.upload_unavailable_since = None
                 continue
             if status is not None and 400 <= status < 500:
                 reason = 'collector rejected sample with HTTP {}: {}'.format(status, detail)
                 reject_queued(path, self.rejected_dir, reason)
                 self.rejected_total += 1
                 self.last_error = reason
+                self.last_failure_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
+                self.total_failures += 1
                 LOGGER.error('%s', reason)
                 continue
             self.consecutive_failures += 1
+            self.total_failures += 1
+            failure_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
+            self.last_failure_at = failure_at
+            if not self.upload_unavailable_since:
+                self.upload_unavailable_since = failure_at
             self.last_error = 'upload failed: {}'.format(detail or status or 'unknown error')
             LOGGER.warning('%s', self.last_error)
             self._write_health()

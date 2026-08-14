@@ -213,7 +213,8 @@ class CollectorStorage:
             elif not sample or sample['status'] != 'complete':
                 state = 'degraded'
             cards = sample['cards'] if sample else []
-            if state in ('online', 'degraded'):
+            is_fresh = state in ('online', 'degraded')
+            if is_fresh:
                 all_cards.extend(cards)
             utilization = (
                 sum(card['utilization'] for card in cards) / len(cards) if cards else None
@@ -241,32 +242,66 @@ class CollectorStorage:
                 'sample_status': sample['status'] if sample else 'missing',
                 'expected_cards': record['expected_cards'],
                 'collected_cards': len(cards),
+                'fresh_collected_cards': len(cards) if is_fresh else 0,
+                'last_known_collected_cards': len(cards),
                 'coverage_percent': sample['coverage_percent'] if sample else 0.0,
                 'utilization_avg': round(utilization, 2) if utilization is not None else None,
+                'fresh_utilization_avg': (
+                    round(utilization, 2) if is_fresh and utilization is not None else None
+                ),
+                'last_known_utilization_avg': (
+                    round(utilization, 2) if utilization is not None else None
+                ),
                 'hbm_used_mb': hbm_used if hbm_total else None,
                 'hbm_total_mb': hbm_total if hbm_total else None,
                 'hbm_percent': round(hbm_used * 100.0 / hbm_total, 2) if hbm_total else None,
+                'fresh_hbm_percent': (
+                    round(hbm_used * 100.0 / hbm_total, 2)
+                    if is_fresh and hbm_total else None
+                ),
+                'last_known_hbm_percent': (
+                    round(hbm_used * 100.0 / hbm_total, 2) if hbm_total else None
+                ),
                 'cards': cards,
             })
         total_expected = sum(node['expected_cards'] for node in nodes)
         active_nodes = [node for node in nodes if node['state'] in ('online', 'degraded')]
+        reporting_expected = sum(node['expected_cards'] for node in active_nodes)
         total_collected = sum(node['collected_cards'] for node in active_nodes)
+        last_known_collected = sum(node['last_known_collected_cards'] for node in nodes)
+        fleet_freshness = round(
+            total_collected * 100.0 / total_expected, 2
+        ) if total_expected else 0.0
+        reporting_coverage = round(
+            total_collected * 100.0 / reporting_expected, 2
+        ) if reporting_expected else None
         hbm_cards = [card for card in all_cards if card['hbm_total_mb']]
         hbm_used = sum(card['hbm_used_mb'] for card in hbm_cards)
         hbm_total = sum(card['hbm_total_mb'] for card in hbm_cards)
         return {
-            'snapshot_version': 1,
+            'snapshot_version': 2,
             'generated_at': now.isoformat(timespec='seconds'),
             'node_counts': {
                 state: sum(node['state'] == state for node in nodes)
                 for state in ('online', 'degraded', 'stale', 'offline')
             },
             'total_nodes': len(nodes),
+            'registered_expected_cards': total_expected,
+            'fresh_expected_cards': reporting_expected,
+            'fresh_collected_cards': total_collected,
+            'last_known_collected_cards': last_known_collected,
+            'stale_expected_cards': sum(
+                node['expected_cards'] for node in nodes if node['state'] == 'stale'
+            ),
+            'offline_expected_cards': sum(
+                node['expected_cards'] for node in nodes if node['state'] == 'offline'
+            ),
+            'fleet_freshness_coverage_percent': fleet_freshness,
+            'reporting_sample_coverage_percent': reporting_coverage,
+            # Backward-compatible aliases retained for snapshot v1 clients.
             'expected_cards': total_expected,
             'active_collected_cards': total_collected,
-            'coverage_percent': round(
-                total_collected * 100.0 / total_expected, 2
-            ) if total_expected else 0.0,
+            'coverage_percent': fleet_freshness,
             'utilization_avg': round(
                 sum(card['utilization'] for card in all_cards) / len(all_cards), 2
             ) if all_cards else None,

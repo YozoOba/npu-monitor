@@ -21,8 +21,11 @@ def main():
         try:
             with open(config.UPLOAD_HEALTH_FILE, 'r', encoding='utf-8') as handle:
                 upload = json.load(handle)
-            upload_note = 'pending={}, last upload={}'.format(
-                upload.get('pending_samples', '?'), upload.get('last_success') or 'never'
+            upload_note = 'pending={}, oldest={}s, last upload={}, unavailable since={}'.format(
+                upload.get('pending_samples', '?'),
+                upload.get('oldest_pending_age_seconds'),
+                upload.get('last_success') or 'never',
+                upload.get('upload_unavailable_since') or '-',
             )
         except (OSError, ValueError):
             pass

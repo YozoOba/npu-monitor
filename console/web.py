@@ -23,7 +23,7 @@ INDEX_HTML = r'''<!doctype html>
 <style>
 body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:#0b1220;color:#e5e7eb}
 main{max-width:1400px;margin:auto;padding:24px}.head{display:flex;justify-content:space-between;align-items:end}
-.muted{color:#94a3b8}.cards{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:12px;margin:20px 0}
+.muted{color:#94a3b8}.cards{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:12px;margin:20px 0}
 .tile,.panel{background:#111c30;border:1px solid #24324a;border-radius:10px;padding:16px}.value{font-size:28px;font-weight:700;margin-top:6px}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #24324a}th{color:#94a3b8}
 .online{color:#4ade80}.degraded,.stale{color:#fbbf24}.offline{color:#f87171}canvas{width:100%;height:260px}
@@ -33,19 +33,27 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;bor
 <div class="cards">
  <div class="tile"><div class="muted">节点</div><div id="nodes" class="value">-</div></div>
  <div class="tile"><div class="muted">在线 / 异常</div><div id="online" class="value">-</div></div>
- <div class="tile"><div class="muted">有效卡 / 预期</div><div id="cards" class="value">-</div></div>
+ <div class="tile"><div class="muted">登记容量</div><div id="registered" class="value">-</div></div>
+ <div class="tile"><div class="muted">新鲜样本 / 容量</div><div id="fresh" class="value">-</div></div>
  <div class="tile"><div class="muted">集群利用率</div><div id="util" class="value">-</div></div>
  <div class="tile"><div class="muted">HBM</div><div id="hbm" class="value">-</div></div>
 </div>
+<div id="freshness" class="panel muted">正在读取数据新鲜度…</div>
 <div class="panel"><h2>最近 24 小时利用率</h2><canvas id="chart" width="1200" height="260"></canvas></div>
-<div class="panel" style="margin-top:12px"><h2>节点明细</h2><div class="table-wrap"><table><thead><tr><th>节点</th><th>状态</th><th>卡数</th><th>利用率</th><th>HBM</th><th>数据年龄</th></tr></thead><tbody id="rows"></tbody></table></div></div>
+<div class="panel" style="margin-top:12px"><h2>节点明细</h2><div class="table-wrap"><table><thead><tr><th>节点</th><th>状态</th><th>最近卡数</th><th>新鲜利用率</th><th>新鲜 HBM</th><th>数据年龄</th></tr></thead><tbody id="rows"></tbody></table></div></div>
 </main><script>
 const pct=v=>v==null?'-':v.toFixed(2)+'%';
 async function loadSnapshot(){const s=await fetch('/api/snapshot',{cache:'no-store'}).then(r=>{if(!r.ok)throw Error(r.status);return r.json()});
+ const registered=s.registered_expected_cards!=null?s.registered_expected_cards:s.expected_cards;
+ const fresh=s.fresh_collected_cards!=null?s.fresh_collected_cards:s.active_collected_cards;
+ const lastKnown=s.last_known_collected_cards!=null?s.last_known_collected_cards:fresh;
+ const fleet=s.fleet_freshness_coverage_percent!=null?s.fleet_freshness_coverage_percent:s.coverage_percent;
+ const reporting=s.reporting_sample_coverage_percent;
  document.querySelector('#updated').textContent='更新：'+s.generated_at;document.querySelector('#nodes').textContent=s.total_nodes;
  document.querySelector('#online').textContent=(s.node_counts.online+s.node_counts.degraded)+' / '+(s.node_counts.stale+s.node_counts.offline);
- document.querySelector('#cards').textContent=s.active_collected_cards+' / '+s.expected_cards;document.querySelector('#util').textContent=pct(s.utilization_avg);document.querySelector('#hbm').textContent=pct(s.hbm_percent);
- document.querySelector('#rows').innerHTML=s.nodes.map(n=>`<tr><td>${n.node_id}</td><td class="${n.state}">${n.state}</td><td>${n.collected_cards}/${n.expected_cards}</td><td>${pct(n.utilization_avg)}</td><td>${pct(n.hbm_percent)}</td><td>${n.age_seconds}s</td></tr>`).join('');}
+ document.querySelector('#registered').textContent=registered+' cards';document.querySelector('#fresh').textContent=fresh+' / '+registered;document.querySelector('#util').textContent=pct(s.utilization_avg);document.querySelector('#hbm').textContent=pct(s.hbm_percent);
+ document.querySelector('#freshness').textContent=`Fleet freshness: ${pct(fleet)} · Reporting completeness: ${pct(reporting)} · Last known cards: ${lastKnown} · Stale capacity: ${s.stale_expected_cards||0} · Offline capacity: ${s.offline_expected_cards||0}`;
+ document.querySelector('#rows').innerHTML=s.nodes.map(n=>{const freshUtil='fresh_utilization_avg'in n?n.fresh_utilization_avg:((n.state==='online'||n.state==='degraded')?n.utilization_avg:null);const freshHbm='fresh_hbm_percent'in n?n.fresh_hbm_percent:((n.state==='online'||n.state==='degraded')?n.hbm_percent:null);return `<tr><td>${n.node_id}</td><td class="${n.state}">${n.state}</td><td>${n.collected_cards}/${n.expected_cards}</td><td>${pct(freshUtil)}</td><td>${pct(freshHbm)}</td><td>${n.age_seconds}s</td></tr>`}).join('');}
 function chart(points){const c=document.querySelector('#chart'),x=c.getContext('2d'),w=c.width,h=c.height,p=35;x.clearRect(0,0,w,h);x.strokeStyle='#334155';x.fillStyle='#94a3b8';x.font='12px sans-serif';
  for(let v=0;v<=100;v+=25){let y=h-p-(h-2*p)*v/100;x.beginPath();x.moveTo(p,y);x.lineTo(w-p,y);x.stroke();x.fillText(v+'%',2,y+4)}if(!points.length)return;
  x.strokeStyle='#38bdf8';x.lineWidth=2;x.beginPath();points.forEach((q,i)=>{let xx=p+(w-2*p)*i/Math.max(1,points.length-1),yy=h-p-(h-2*p)*q.utilization_avg/100;i?x.lineTo(xx,yy):x.moveTo(xx,yy)});x.stroke();}
