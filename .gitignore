@@ -41,3 +41,7 @@ npu-smi-info.txt
 Thumbs.db
 desktop.ini
 
+
+# local-only: do not commit
+.ssh/
+.claude/
