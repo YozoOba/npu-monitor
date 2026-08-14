@@ -10,6 +10,7 @@ data/
 agent-data/
 collector-data/
 cluster-data/
+runtime-data/
 *.pid
 *.log
 *.out
