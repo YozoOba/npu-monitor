@@ -31,7 +31,7 @@ warn_if_zombie() {
     parent="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
     if [ "$state" = "Z" ]; then
         echo "WARNING: PID $pid is a zombie owned by PPID ${parent:-unknown}."
-        echo "Only its parent can reap it; if PPID is 1, recreate the container with --init."
+        echo "Only its parent can reap it; if PPID is 1, recreate the container with deploy/mini_init.py as PID 1."
     fi
 }
 

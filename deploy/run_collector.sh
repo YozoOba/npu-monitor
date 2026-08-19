@@ -1,17 +1,10 @@
-#!/bin/bash
-set -euo pipefail
+#!/usr/bin/env bash
 
-: "${NPU_COLLECTOR_DATA_DIR:?Set NPU_COLLECTOR_DATA_DIR to an absolute host directory}"
-mkdir -p "$NPU_COLLECTOR_DATA_DIR"
+set -Eeuo pipefail
 
-docker run -d \
-  --name "${NPU_COLLECTOR_CONTAINER:-npu-monitor-collector}" \
-  --init \
-  --restart unless-stopped \
-  -p "${NPU_COLLECTOR_PUBLIC_PORT:-18080}:18080" \
-  -e NPU_COLLECTOR_RETENTION_DAYS="${NPU_COLLECTOR_RETENTION_DAYS:-180}" \
-  -e NPU_COLLECTOR_STALE_SECONDS="${NPU_COLLECTOR_STALE_SECONDS:-120}" \
-  -e NPU_COLLECTOR_OFFLINE_SECONDS="${NPU_COLLECTOR_OFFLINE_SECONDS:-300}" \
-  -v "$NPU_COLLECTOR_DATA_DIR:/app/data" \
-  "${NPU_COLLECTOR_IMAGE:-npu-monitor-collector:1.0}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PROJECT_DIR="${NPU_MONITOR_PROJECT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd -P)}"
+: "${NPU_COLLECTOR_IMAGE:?Set NPU_COLLECTOR_IMAGE to an existing local image ID or name}"
 
+echo "NOTICE: run_collector.sh is a compatibility wrapper." >&2
+exec "$SCRIPT_DIR/create_collector_container.sh" "$NPU_COLLECTOR_IMAGE" "$PROJECT_DIR"

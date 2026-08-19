@@ -15,8 +15,12 @@ inside_container() {
 }
 
 pid1_can_reap_children() {
-    local pid1_comm
+    local pid1_comm pid1_args
     pid1_comm="$(cat /proc/1/comm 2>/dev/null || true)"
+    pid1_args="$(tr '\0' ' ' </proc/1/cmdline 2>/dev/null || true)"
+    case "$pid1_args" in
+        *mini_init.py*) return 0 ;;
+    esac
     case "$pid1_comm" in
         init|systemd|tini|docker-init|dumb-init|supervisord|s6-svscan|runsvdir) return 0 ;;
         *) return 1 ;;
@@ -28,7 +32,7 @@ if inside_container && ! pid1_can_reap_children; then
         echo "Refusing unsafe background start inside this container."
         echo "Container PID 1 ($(cat /proc/1/comm 2>/dev/null || echo unknown)) is not a known child reaper."
         echo "Starting with nohup here creates unreaped Python zombie processes."
-        echo "Recreate the monitor container with 'docker run --init' or run:"
+        echo "Recreate the container with deploy/mini_init.py as PID 1 or run:"
         echo "  exec python3 -u $SCRIPT_DIR/npu_monitor.py"
         exit 2
     fi

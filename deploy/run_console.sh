@@ -1,13 +1,10 @@
-#!/bin/bash
-set -euo pipefail
+#!/usr/bin/env bash
 
-: "${NPU_CONSOLE_COLLECTOR_URL:?Set NPU_CONSOLE_COLLECTOR_URL, for example http://192.168.1.10:18080}"
+set -Eeuo pipefail
 
-docker run -d \
-  --name "${NPU_CONSOLE_CONTAINER:-npu-monitor-console}" \
-  --init \
-  --restart unless-stopped \
-  -p "${NPU_CONSOLE_PUBLIC_PORT:-18081}:18081" \
-  -e NPU_CONSOLE_COLLECTOR_URL="$NPU_CONSOLE_COLLECTOR_URL" \
-  "${NPU_CONSOLE_IMAGE:-npu-monitor-console:1.0}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PROJECT_DIR="${NPU_MONITOR_PROJECT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd -P)}"
+: "${NPU_CONSOLE_IMAGE:?Set NPU_CONSOLE_IMAGE to an existing local image ID or name}"
 
+echo "NOTICE: run_console.sh is a compatibility wrapper." >&2
+exec "$SCRIPT_DIR/create_console_container.sh" "$NPU_CONSOLE_IMAGE" "$PROJECT_DIR"

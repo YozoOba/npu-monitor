@@ -3,6 +3,7 @@
 当前项目同时保留单机版与集群版。集群版拆分为 `agent/`、`collector/`、`console/` 三个可独立构建和部署的组件，采用 Agent 主动 POST、磁盘断线队列、SQLite 去重存储以及独立查询展示服务。
 
 - 集群部署与配置：[使用指导.md](使用指导.md)
+- 离线集群部署方案：[DEPLOYMENT_PLAN.md](DEPLOYMENT_PLAN.md)
 - 集群测试与验收：[测试指南.md](测试指南.md)
 - 原单机采集器仍位于项目根目录，下面内容是其兼容说明。
 
@@ -162,28 +163,17 @@ chmod +x setup.sh && ./setup.sh
 
 ### 容器运行建议
 
-容器必须启用轻量 init，负责回收孤儿进程：
+当前离线集群不依赖 Docker `--init`。项目提供 `deploy/mini_init.py` 作为容器 PID 1，负责转发信号和回收孤儿进程；不需要安装软件、重新制作镜像或重启 Docker daemon。
+
+集群版直接复用本机已有镜像：
 
 ```bash
-docker run --init ...
+export NPU_AGENT_NODE_ID=npu-node-01
+export NPU_AGENT_COLLECTOR_URL=http://主节点IP:18080
+./deploy/create_agent_container.sh 本机镜像ID /work/monitor
 ```
 
-如果容器 PID 1 是普通 bash、sh 或业务进程，`start.sh` 会拒绝使用 `nohup` 后台启动，因为该方式已经确认会产生 PPID 为 1、无法通过 kill 清除的 Python 僵尸进程。已有僵尸只能通过删除原容器清除。
-
-如果使用独立监控容器，推荐让 Python 作为前台主进程，并将 `data` 挂载到宿主机持久目录：
-
-```bash
-docker run -d \
-  --name npu-monitor \
-  --init \
-  --restart unless-stopped \
-  -e NPU_MONITOR_EXPECTED_NPU_COUNT=8 \
-  -v /宿主机监控数据目录:/app/data \
-  <包含本项目和NPU运行环境的镜像> \
-  /app/run_foreground.sh
-```
-
-这种方式直接使用 `docker stop/start` 管理，不需要 PID 文件和 `nohup`。NPU 设备、驱动目录和运行时参数沿用现有 910B 容器配置。
+不要在容器中使用 `nohup python3 ... &`。已有僵尸进程不能被 `kill`，只能由父进程回收或通过停止旧容器清除。
 
 可将下面的命令配置为 Docker 健康检查：
 

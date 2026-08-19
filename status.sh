@@ -49,7 +49,7 @@ show_zombie_warning() {
     zombie_count="$(ps -eo ppid=,stat=,comm= 2>/dev/null | awk '$1 == 1 && $2 ~ /^Z/ && $3 ~ /python/ {count++} END {print count+0}')"
     if [ "$zombie_count" -gt 0 ]; then
         echo "WARNING: $zombie_count Python zombie process(es) are owned by container PID 1."
-        echo "They cannot be killed; recreate the container with docker run --init."
+        echo "They cannot be killed; recreate the container with deploy/mini_init.py as PID 1."
     fi
 }
 
