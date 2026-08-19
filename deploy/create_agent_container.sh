@@ -27,6 +27,7 @@ Optional container settings:
   NPU_MONITOR_LOG_MAX_SIZE        default: 20m
   NPU_MONITOR_LOG_MAX_FILES       default: 5
   NPU_MONITOR_INIT_KILL_AFTER     default: 20 seconds
+  NPU_AGENT_HCCL_MOUNTS           auto (default), enabled, or disabled
 EOF
 }
 
@@ -46,6 +47,7 @@ STOP_TIMEOUT="${NPU_MONITOR_STOP_TIMEOUT:-30}"
 LOG_MAX_SIZE="${NPU_MONITOR_LOG_MAX_SIZE:-20m}"
 LOG_MAX_FILES="${NPU_MONITOR_LOG_MAX_FILES:-5}"
 INIT_KILL_AFTER="${NPU_MONITOR_INIT_KILL_AFTER:-20}"
+HCCL_MOUNTS="${NPU_AGENT_HCCL_MOUNTS:-auto}"
 HOST_SHORT_NAME="$(hostname -s 2>/dev/null || hostname)"
 HOST_FULL_NAME="$(hostname)"
 
@@ -55,28 +57,42 @@ require_new_container_name "$CONTAINER_NAME"
 require_project_files "$HOST_PROJECT_DIR" \
     agent/app.py agent/healthcheck.py cluster_common/protocol.py deploy/mini_init.py
 
+shopt -s nullglob
+npu_device_paths=(/dev/davinci[0-9]*)
+shopt -u nullglob
+(( ${#npu_device_paths[@]} > 0 )) || die "no /dev/davinciN devices were found"
+
 required_host_paths=(
-    /dev/davinci0
-    /dev/davinci1
-    /dev/davinci2
-    /dev/davinci3
-    /dev/davinci4
-    /dev/davinci5
-    /dev/davinci6
-    /dev/davinci7
     /dev/davinci_manager
     /dev/devmm_svm
     /dev/hisi_hdc
     /usr/local/dcmi
-    /usr/local/Ascend/driver/tools/hccn_tool
     /usr/local/bin/npu-smi
     /usr/local/Ascend/driver/lib64
     /usr/local/Ascend/driver/version.info
     /etc/ascend_install.info
-    /etc/hccn.conf
     /mnt
 )
 require_host_paths "${required_host_paths[@]}"
+
+case "$HCCL_MOUNTS" in
+    auto)
+        npu_smi_summary="$(/usr/local/bin/npu-smi info 2>/dev/null || true)"
+        if grep -Eq '(^|[^0-9])310P[0-9A-Za-z]*([^0-9A-Za-z]|$)' <<<"$npu_smi_summary"; then
+            HCCL_MOUNTS=disabled
+        elif [[ -e /usr/local/Ascend/driver/tools/hccn_tool && -e /etc/hccn.conf ]]; then
+            HCCL_MOUNTS=enabled
+        else
+            HCCL_MOUNTS=disabled
+        fi
+        ;;
+    enabled)
+        require_host_paths \
+            /usr/local/Ascend/driver/tools/hccn_tool /etc/hccn.conf
+        ;;
+    disabled) ;;
+    *) die "NPU_AGENT_HCCL_MOUNTS must be auto, enabled, or disabled" ;;
+esac
 mkdir -p "$HOST_PROJECT_DIR/runtime-data/agent"
 
 docker_args=(
@@ -105,8 +121,8 @@ docker_args=(
     -e NPU_AGENT_DATA_DIR=/work/monitor/runtime-data/agent
 )
 
-for card_index in {0..7}; do
-    docker_args+=(--device "/dev/davinci${card_index}")
+for npu_device_path in "${npu_device_paths[@]}"; do
+    docker_args+=(--device "$npu_device_path")
 done
 
 docker_args+=(
@@ -114,15 +130,20 @@ docker_args+=(
     --device /dev/devmm_svm
     --device /dev/hisi_hdc
     -v /usr/local/dcmi:/usr/local/dcmi
-    -v /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool
     -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
     -v /usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64
     -v /usr/local/Ascend/driver/version.info:/usr/local/Ascend/driver/version.info
     -v /etc/ascend_install.info:/etc/ascend_install.info
-    -v /etc/hccn.conf:/etc/hccn.conf
     -v /mnt:/mnt
     -v "$HOST_PROJECT_DIR:/work/monitor"
 )
+
+if [[ "$HCCL_MOUNTS" == enabled ]]; then
+    docker_args+=(
+        -v /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool
+        -v /etc/hccn.conf:/etc/hccn.conf
+    )
+fi
 
 optional_agent_variables=(
     NPU_AGENT_EXPECTED_CARDS
@@ -152,6 +173,8 @@ print_created "Agent" "$CONTAINER_NAME" "$container_id" "$IMAGE_REF" "$HOST_PROJ
 echo "  node_id:    ${NPU_AGENT_NODE_ID:-$HOST_SHORT_NAME}"
 echo "  cluster_id: ${NPU_AGENT_CLUSTER_ID:-default}"
 echo "  collector:  $NPU_AGENT_COLLECTOR_URL"
+echo "  devices:    ${#npu_device_paths[@]}"
+echo "  HCCL mounts: $HCCL_MOUNTS"
 echo
 echo "Checks:"
 echo "  docker logs --tail 100 $CONTAINER_NAME"

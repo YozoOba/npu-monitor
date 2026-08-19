@@ -14,6 +14,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+from agent.sampler import parse_npu_smi_output
 from config import (
     COLLECT_INTERVAL,
     DAILY_DIR,
@@ -106,57 +107,6 @@ def release_pid_file():
             os.remove(PID_FILE)
     except (OSError, ValueError):
         pass
-
-
-def _parse_hbm(text):
-    matches = re.findall(r'(\d+)\s*/\s*(\d+)', text)
-    if not matches:
-        return None, None
-    used, total = matches[-1]
-    return int(used), int(total)
-
-
-def parse_npu_smi_output(output):
-    """Parse the two-line table emitted by the currently deployed npu-smi.
-
-    Keeping this pure makes driver-specific output testable without NPU access.
-    Values outside 0..100 and duplicate card rows are rejected.
-    """
-    cards = {}
-    lines = output.splitlines()
-    for index, line in enumerate(lines[:-1]):
-        # Preserve the parser shape that was already working in the deployed
-        # environment: card header, followed by its utilization detail row.
-        card_match = re.match(r'^\|\s*(\d+)\s+\w+', line)
-        if not card_match:
-            continue
-
-        card_id = int(card_match.group(1))
-        detail_line = lines[index + 1]
-        parts = [part.strip() for part in detail_line.split('|')]
-        if len(parts) < 4:
-            continue
-
-        utilization_match = re.match(r'^([0-9]+(?:\.[0-9]+)?)\s*%?', parts[3])
-        if not utilization_match:
-            continue
-        utilization = float(utilization_match.group(1))
-        if not 0.0 <= utilization <= 100.0:
-            continue
-
-        hbm_used, hbm_total = _parse_hbm(parts[3])
-        # The detail row can also match the broad header regex. Keeping the
-        # first valid observation prevents it from overwriting the real card.
-        if card_id in cards:
-            continue
-        cards[card_id] = {
-            'card_id': card_id,
-            'utilization': utilization,
-            'hbm_used_mb': hbm_used,
-            'hbm_total_mb': hbm_total,
-        }
-
-    return [cards[card_id] for card_id in sorted(cards)]
 
 
 def collect_npu_data():

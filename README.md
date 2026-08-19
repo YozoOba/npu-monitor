@@ -178,6 +178,11 @@ export NPU_AGENT_COLLECTOR_URL=http://主节点IP:18080
 ./deploy/create_agent_container.sh 本机镜像ID /work/monitor
 ```
 
+Agent 容器始终使用 `--privileged=true`，并动态发现宿主机的
+`/dev/davinciN` 设备。HCCL/HCCN 挂载默认为 `auto`：检测到310P时跳过，
+910B/910C文件齐全时自动保留。也可以在创建容器前设置
+`NPU_AGENT_HCCL_MOUNTS=disabled` 或 `enabled` 强制覆盖。
+
 不要在容器中使用 `nohup python3 ... &`。已有僵尸进程不能被 `kill`，只能由父进程回收或通过停止旧容器清除。
 
 可将下面的命令配置为 Docker 健康检查：
