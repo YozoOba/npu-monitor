@@ -135,6 +135,7 @@ optional_agent_variables=(
     NPU_AGENT_MIN_FREE_BYTES
     NPU_AGENT_MIN_FREE_INODES
     NPU_AGENT_NPU_SMI_BIN
+    NPU_AGENT_MONTHLY_XLSX_ENABLED
 )
 for variable_name in "${optional_agent_variables[@]}"; do
     if [[ -n "${!variable_name:-}" ]]; then

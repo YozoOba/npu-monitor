@@ -13,10 +13,20 @@ def env_int(name, default, minimum=0):
     return value
 
 
+def env_bool(name, default=True):
+    raw = os.environ.get(name, '1' if default else '0').strip().lower()
+    if raw in ('1', 'true', 'yes', 'on'):
+        return True
+    if raw in ('0', 'false', 'no', 'off'):
+        return False
+    raise ValueError('{} must be a boolean, got {!r}'.format(name, raw))
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.abspath(os.environ.get('NPU_AGENT_DATA_DIR', '/app/data'))
 DAILY_DIR = os.path.join(DATA_DIR, 'daily')
 STATUS_DIR = os.path.join(DATA_DIR, 'sample_status')
+MONTHLY_DIR = os.path.join(DATA_DIR, 'monthly')
 SPOOL_DIR = os.path.join(DATA_DIR, 'spool')
 REJECTED_DIR = os.path.join(DATA_DIR, 'rejected')
 HEALTH_FILE = os.path.join(DATA_DIR, 'health.json')
@@ -37,6 +47,7 @@ UPLOAD_BATCH_SIZE = env_int('NPU_AGENT_UPLOAD_BATCH_SIZE', 100, 1)
 MIN_FREE_BYTES = env_int('NPU_AGENT_MIN_FREE_BYTES', 100 * 1024 * 1024, 0)
 MIN_FREE_INODES = env_int('NPU_AGENT_MIN_FREE_INODES', 1000, 0)
 NPU_SMI_BIN = os.environ.get('NPU_AGENT_NPU_SMI_BIN', 'npu-smi')
+MONTHLY_XLSX_ENABLED = env_bool('NPU_AGENT_MONTHLY_XLSX_ENABLED', True)
 
 
 def validate():
@@ -44,5 +55,6 @@ def validate():
         raise ValueError('NPU_AGENT_NODE_ID is required and must be stable')
     if not COLLECTOR_URL.startswith(('http://', 'https://')):
         raise ValueError('NPU_AGENT_COLLECTOR_URL must be an http(s) URL')
-    for directory in (DATA_DIR, DAILY_DIR, STATUS_DIR, SPOOL_DIR, REJECTED_DIR):
+    for directory in (
+            DATA_DIR, DAILY_DIR, STATUS_DIR, MONTHLY_DIR, SPOOL_DIR, REJECTED_DIR):
         os.makedirs(directory, exist_ok=True)

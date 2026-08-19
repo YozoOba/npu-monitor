@@ -2,6 +2,8 @@
 
 当前项目同时保留单机版与集群版。集群版拆分为 `agent/`、`collector/`、`console/` 三个可独立构建和部署的组件，采用 Agent 主动 POST、磁盘断线队列、SQLite 去重存储以及独立查询展示服务。
 
+集群 Agent 同时保留每日 CSV，并使用 Python 标准库每天生成一次月度 XLSX；每个已完成 UTC 日期对应一个 Sheet，不需要安装额外表格处理包。
+
 - 集群部署与配置：[使用指导.md](使用指导.md)
 - 离线集群部署方案：[DEPLOYMENT_PLAN.md](DEPLOYMENT_PLAN.md)
 - 集群测试与验收：[测试指南.md](测试指南.md)

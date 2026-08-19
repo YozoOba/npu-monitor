@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 import signal
 import sys
 import threading
 import time
+import zipfile
 
 from cluster_common import PROTOCOL_VERSION
 from cluster_common.atomic import write_json_atomic
@@ -16,6 +17,10 @@ from . import __version__
 from . import config
 from .sampler import collect
 from .sender import UploadWorker
+from .monthly_xlsx import (
+    MonthlyWorkbookError, clean_old_monthly_workbooks,
+    update_monthly_workbooks,
+)
 from .storage import (
     clean_old_local_data, clean_rejected, enqueue, expire_queued, queue_usage,
     save_local_sample,
@@ -92,9 +97,23 @@ def run(once=False):
         while not STOP_EVENT.is_set():
             collected_at = datetime.now(timezone.utc)
             if collected_at.date() != last_cleanup_day:
+                if config.MONTHLY_XLSX_ENABLED:
+                    try:
+                        through_date = collected_at.date() - timedelta(days=1)
+                        updated_workbooks = update_monthly_workbooks(
+                            config.DAILY_DIR, config.MONTHLY_DIR, through_date
+                        )
+                        for workbook_path in updated_workbooks:
+                            LOGGER.info('updated monthly workbook %s', workbook_path)
+                    except (OSError, MonthlyWorkbookError, zipfile.BadZipFile):
+                        LOGGER.exception('cannot update monthly XLSX workbooks')
                 clean_old_local_data(
                     (config.DAILY_DIR, config.STATUS_DIR), config.RETENTION_DAYS,
                     now=collected_at,
+                )
+                clean_old_monthly_workbooks(
+                    config.MONTHLY_DIR, config.RETENTION_DAYS,
+                    collected_at.date(),
                 )
                 expired = expire_queued(
                     config.SPOOL_DIR, config.REJECTED_DIR,

@@ -96,6 +96,7 @@ Agent 数据保存在每个节点：
 ```text
 /work/monitor/runtime-data/agent/
 ├── daily/
+├── monthly/               # stats_YYYY-MM.xlsx，每日一个 Sheet
 ├── sample_status/
 ├── spool/
 ├── rejected/
@@ -113,7 +114,9 @@ Collector 数据保存在主节点：
 └── latest_snapshot.json
 ```
 
-默认本地采样和 Collector 历史保留 180 天；Agent 待上传队列默认最多保留 7 天、20000 个文件或 512 MB。
+默认本地采样、月度 XLSX 和 Collector 历史保留 180 天；Agent 待上传队列默认最多保留 7 天、20000 个文件或 512 MB。
+
+Agent 继续将每日 CSV 作为可靠原始记录，并在每天第一次采集时用 Python 标准库原子更新月度 `stats_YYYY-MM.xlsx`。工作簿按 UTC 日期创建 Sheet，不依赖 `openpyxl` 等第三方包；当前日期的数据会在次日完成后进入 XLSX，监控开始后的数据缺失日期以空 Sheet 表示。
 
 ## 6. 日志和容器生命周期
 
@@ -145,6 +148,7 @@ log files:      5
 - 容器中不存在 `Z` 状态进程；
 - Agent 每次完整采样包含 8 张卡；
 - 节点本地 CSV 在网络中断时继续写入；
+- 月度 XLSX 每天更新一次，Sheet 与已完成 UTC 日期一一对应；
 - Collector 恢复后 `spool` 自动清空且数据不重复；
 - 上传失败状态跨 Agent 重启保留；
 - 集群利用率按所有新鲜有效卡加权；
