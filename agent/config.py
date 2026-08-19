@@ -34,6 +34,7 @@ UPLOAD_HEALTH_FILE = os.path.join(DATA_DIR, 'upload_health.json')
 
 NODE_ID = os.environ.get('NPU_AGENT_NODE_ID', '').strip()
 NODE_NAME = os.environ.get('NPU_AGENT_NODE_NAME', socket.gethostname()).strip()
+CLUSTER_ID = os.environ.get('NPU_AGENT_CLUSTER_ID', 'default').strip()
 COLLECTOR_URL = os.environ.get('NPU_AGENT_COLLECTOR_URL', '').rstrip('/')
 COLLECT_INTERVAL = env_int('NPU_AGENT_COLLECT_INTERVAL', 60, 1)
 EXPECTED_CARDS = env_int('NPU_AGENT_EXPECTED_CARDS', 8, 1)
@@ -53,6 +54,8 @@ MONTHLY_XLSX_ENABLED = env_bool('NPU_AGENT_MONTHLY_XLSX_ENABLED', True)
 def validate():
     if not NODE_ID:
         raise ValueError('NPU_AGENT_NODE_ID is required and must be stable')
+    if not CLUSTER_ID:
+        raise ValueError('NPU_AGENT_CLUSTER_ID must not be empty')
     if not COLLECTOR_URL.startswith(('http://', 'https://')):
         raise ValueError('NPU_AGENT_COLLECTOR_URL must be an http(s) URL')
     for directory in (

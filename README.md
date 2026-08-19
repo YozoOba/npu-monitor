@@ -4,6 +4,8 @@
 
 集群 Agent 同时保留每日 CSV，并使用 Python 标准库每天生成一次月度 XLSX；每个已完成 UTC 日期对应一个 Sheet，不需要安装额外表格处理包。
 
+集群查询支持多集群分组、节点搜索分页、自定义时间范围、节点/单卡历史、原始采样和告警生命周期查询，并可直接导出逐卡 CSV 或 XLSX；全部运行功能仍只依赖 Python 标准库。
+
 - 集群部署与配置：[使用指导.md](使用指导.md)
 - 离线集群部署方案：[DEPLOYMENT_PLAN.md](DEPLOYMENT_PLAN.md)
 - 集群测试与验收：[测试指南.md](测试指南.md)
@@ -171,6 +173,7 @@ chmod +x setup.sh && ./setup.sh
 
 ```bash
 export NPU_AGENT_NODE_ID=npu-node-01
+export NPU_AGENT_CLUSTER_ID=training-a
 export NPU_AGENT_COLLECTOR_URL=http://主节点IP:18080
 ./deploy/create_agent_container.sh 本机镜像ID /work/monitor
 ```

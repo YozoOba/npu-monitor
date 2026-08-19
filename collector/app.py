@@ -21,6 +21,30 @@ from .storage import CollectorStorage, ConflictingSampleError
 LOGGER = logging.getLogger('npu_collector')
 
 
+def query_int(query, name, default, minimum, maximum):
+    value = int(query.get(name, [str(default)])[0])
+    if value < minimum or value > maximum:
+        raise ValueError('{} must be between {} and {}'.format(
+            name, minimum, maximum
+        ))
+    return value
+
+
+def query_time_range(query, default_hours=24):
+    now = datetime.now(timezone.utc)
+    start = parse_timestamp(query.get('start', [
+        (now - timedelta(hours=default_hours)).isoformat(timespec='seconds')
+    ])[0]).astimezone(timezone.utc)
+    end = parse_timestamp(query.get('end', [
+        now.isoformat(timespec='seconds')
+    ])[0]).astimezone(timezone.utc)
+    if end <= start:
+        raise ValueError('end must be later than start')
+    if (end - start).total_seconds() > config.RETENTION_DAYS * 86400:
+        raise ValueError('time range exceeds collector retention window')
+    return start, end
+
+
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -35,13 +59,16 @@ class CollectorApplication:
         self.maintenance = None
 
     def refresh_snapshot(self):
-        snapshot = self.storage.build_snapshot(
-            config.STALE_FLOOR_SECONDS, config.OFFLINE_FLOOR_SECONDS,
-            config.CLOCK_SKEW_WARN_SECONDS,
-            config.BUSY_UTILIZATION, config.IDLE_UTILIZATION,
-        )
-        write_json_atomic(config.SNAPSHOT_PATH, snapshot)
         with self.snapshot_lock:
+            # Serialize refreshes triggered by concurrent Agent uploads so an
+            # older build can never overwrite a newer in-memory snapshot.
+            snapshot = self.storage.build_snapshot(
+                config.STALE_FLOOR_SECONDS, config.OFFLINE_FLOOR_SECONDS,
+                config.CLOCK_SKEW_WARN_SECONDS,
+                config.BUSY_UTILIZATION, config.IDLE_UTILIZATION,
+            )
+            snapshot['active_alert_count'] = self.storage.sync_alerts(snapshot)
+            write_json_atomic(config.SNAPSHOT_PATH, snapshot)
             self.snapshot = snapshot
         return snapshot
 
@@ -163,36 +190,142 @@ def make_handler(application):
                     self.send_json(503, {'status': 'unhealthy', 'error': str(exc)})
                 return
             if parsed.path == '/internal/v1/snapshot':
-                self.send_json(200, application.get_snapshot())
+                query = parse_qs(parsed.query)
+                cluster_id = query.get('cluster_id', [None])[0]
+                snapshot = (
+                    application.get_snapshot() if not cluster_id
+                    else application.storage.build_snapshot(
+                        config.STALE_FLOOR_SECONDS, config.OFFLINE_FLOOR_SECONDS,
+                        config.CLOCK_SKEW_WARN_SECONDS,
+                        config.BUSY_UTILIZATION, config.IDLE_UTILIZATION,
+                        cluster_id=cluster_id,
+                    )
+                )
+                if cluster_id:
+                    snapshot['active_alert_count'] = (
+                        application.storage.active_alert_count(cluster_id)
+                    )
+                self.send_json(200, snapshot)
+                return
+            if parsed.path == '/internal/v1/clusters':
+                snapshot = application.get_snapshot()
+                self.send_json(200, {'items': snapshot.get('clusters', [])})
+                return
+            if parsed.path == '/internal/v1/nodes':
+                try:
+                    query = parse_qs(parsed.query)
+                    page = query_int(query, 'page', 1, 1, 1000000)
+                    page_size = query_int(query, 'page_size', 50, 1, 500)
+                    cluster_id = query.get('cluster_id', [None])[0]
+                    state = query.get('state', [None])[0]
+                    if state and state not in ('online', 'degraded', 'stale', 'offline'):
+                        raise ValueError('invalid state')
+                    search = query.get('q', [''])[0].strip().lower()
+                    snapshot = (
+                        application.get_snapshot() if not cluster_id
+                        else application.storage.build_snapshot(
+                            config.STALE_FLOOR_SECONDS,
+                            config.OFFLINE_FLOOR_SECONDS,
+                            config.CLOCK_SKEW_WARN_SECONDS,
+                            config.BUSY_UTILIZATION,
+                            config.IDLE_UTILIZATION,
+                            cluster_id=cluster_id,
+                        )
+                    )
+                    nodes = snapshot['nodes']
+                    if state:
+                        nodes = [node for node in nodes if node['state'] == state]
+                    if search:
+                        nodes = [node for node in nodes if search in (
+                            node['node_id'] + '\n' + node['node_name']
+                        ).lower()]
+                    total = len(nodes)
+                    offset = (page - 1) * page_size
+                    self.send_json(200, {
+                        'page': page,
+                        'page_size': page_size,
+                        'total': total,
+                        'pages': (total + page_size - 1) // page_size,
+                        'items': nodes[offset:offset + page_size],
+                    })
+                except ValueError as exc:
+                    self.send_json(400, {'error': str(exc)})
                 return
             if parsed.path == '/internal/v1/series':
                 try:
                     query = parse_qs(parsed.query)
-                    now = datetime.now(timezone.utc)
-                    start = parse_timestamp(query.get('start', [
-                        (now - timedelta(hours=24)).isoformat(timespec='seconds')
-                    ])[0]).astimezone(timezone.utc)
-                    end = parse_timestamp(query.get('end', [
-                        now.isoformat(timespec='seconds')
-                    ])[0]).astimezone(timezone.utc)
-                    bucket = int(query.get('bucket', ['300'])[0])
-                    if bucket < 60 or bucket > 86400:
-                        raise ValueError('bucket must be between 60 and 86400 seconds')
-                    if end <= start:
-                        raise ValueError('end must be later than start')
+                    start, end = query_time_range(query)
+                    bucket = query_int(query, 'bucket', 300, 60, 86400)
                     if (end - start).total_seconds() / bucket > 10000:
                         raise ValueError('time range produces more than 10000 buckets')
                     node_id = query.get('node_id', [None])[0]
+                    cluster_id = query.get('cluster_id', [None])[0]
+                    raw_card_id = query.get('card_id', [None])[0]
+                    card_id = None if raw_card_id is None else int(raw_card_id)
+                    if card_id is not None and not 0 <= card_id <= 63:
+                        raise ValueError('card_id must be between 0 and 63')
                     series = application.storage.history_series(
-                        int(start.timestamp()), int(end.timestamp()), bucket, node_id
+                        int(start.timestamp()), int(end.timestamp()), bucket,
+                        node_id, cluster_id, card_id,
                     )
                     self.send_json(200, {
                         'start': start.isoformat(timespec='seconds'),
                         'end': end.isoformat(timespec='seconds'),
                         'bucket_seconds': bucket,
                         'node_id': node_id,
+                        'cluster_id': cluster_id,
+                        'card_id': card_id,
                         'points': series,
                     })
+                except (ValueError, ProtocolError) as exc:
+                    self.send_json(400, {'error': str(exc)})
+                return
+            if parsed.path == '/internal/v1/samples':
+                try:
+                    query = parse_qs(parsed.query)
+                    start, end = query_time_range(query)
+                    page = query_int(query, 'page', 1, 1, 1000000)
+                    page_size = query_int(query, 'page_size', 100, 1, 1000)
+                    sample_status = query.get('status', [None])[0]
+                    if sample_status and sample_status not in ('complete', 'partial', 'failed'):
+                        raise ValueError('invalid sample status')
+                    result = application.storage.query_samples(
+                        int(start.timestamp()), int(end.timestamp()), page,
+                        page_size, query.get('node_id', [None])[0],
+                        query.get('cluster_id', [None])[0], sample_status,
+                        query.get('q', [None])[0],
+                    )
+                    result.update({
+                        'start': start.isoformat(timespec='seconds'),
+                        'end': end.isoformat(timespec='seconds'),
+                    })
+                    self.send_json(200, result)
+                except (ValueError, ProtocolError) as exc:
+                    self.send_json(400, {'error': str(exc)})
+                return
+            if parsed.path == '/internal/v1/alerts':
+                try:
+                    query = parse_qs(parsed.query)
+                    start, end = query_time_range(query)
+                    page = query_int(query, 'page', 1, 1, 1000000)
+                    page_size = query_int(query, 'page_size', 100, 1, 1000)
+                    severity = query.get('severity', [None])[0]
+                    status = query.get('status', [None])[0]
+                    if severity and severity not in ('warning', 'critical'):
+                        raise ValueError('invalid alert severity')
+                    if status and status not in ('active', 'resolved'):
+                        raise ValueError('invalid alert status')
+                    result = application.storage.query_alerts(
+                        int(start.timestamp()), int(end.timestamp()), page,
+                        page_size, query.get('cluster_id', [None])[0],
+                        query.get('node_id', [None])[0], severity, status,
+                        query.get('type', [None])[0],
+                    )
+                    result.update({
+                        'start': start.isoformat(timespec='seconds'),
+                        'end': end.isoformat(timespec='seconds'),
+                    })
+                    self.send_json(200, result)
                 except (ValueError, ProtocolError) as exc:
                     self.send_json(400, {'error': str(exc)})
                 return

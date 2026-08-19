@@ -8,6 +8,7 @@ import time
 import unittest
 from unittest import mock
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from agent.sender import UploadWorker
@@ -126,7 +127,7 @@ class StorageTests(unittest.TestCase):
         snapshot = self.storage.build_snapshot(
             120, 300, now=NOW + timedelta(seconds=121)
         )
-        self.assertEqual(snapshot['snapshot_version'], 2)
+        self.assertEqual(snapshot['snapshot_version'], 3)
         self.assertEqual(snapshot['node_counts']['stale'], 1)
         self.assertEqual(snapshot['registered_expected_cards'], 2)
         self.assertEqual(snapshot['fresh_expected_cards'], 0)
@@ -194,6 +195,15 @@ class HttpAndQueueTests(unittest.TestCase):
         snapshot = client.snapshot()
         self.assertEqual(snapshot['total_nodes'], 1)
         self.assertEqual(client.health()['database_integrity'], 'ok')
+        self.assertEqual(client.clusters()['items'][0]['cluster_id'], 'default')
+        self.assertEqual(client.nodes(search='node-01')['total'], 1)
+        start = (NOW - timedelta(minutes=1)).isoformat(timespec='seconds')
+        end = (NOW + timedelta(minutes=1)).isoformat(timespec='seconds')
+        self.assertEqual(client.series(
+            start, end, 60, card_id=1
+        )['points'][0]['utilization_avg'], 80.0)
+        self.assertEqual(client.samples(start, end)['total'], 1)
+        self.assertEqual(client.alerts(start, end)['total'], 0)
 
     def test_http_rejects_inaccurate_measurement(self):
         invalid = payload(cards=[{'card_id': 0, 'utilization': 101,
@@ -286,11 +296,22 @@ class HttpAndQueueTests(unittest.TestCase):
         try:
             with urlopen(console_url + '/', timeout=2) as response:
                 html = response.read().decode('utf-8')
-                self.assertIn('NPU 集群状态', html)
-                self.assertIn('登记容量', html)
-                self.assertIn('新鲜样本 / 容量', html)
+                self.assertIn('NPU 集群监控', html)
+                self.assertIn('登记卡数', html)
+                self.assertIn('原始采样记录', html)
             with urlopen(console_url + '/api/snapshot', timeout=2) as response:
                 self.assertEqual(json.loads(response.read())['total_nodes'], 1)
+            query = urlencode({
+                'start': (NOW - timedelta(minutes=1)).isoformat(timespec='seconds'),
+                'end': (NOW + timedelta(minutes=1)).isoformat(timespec='seconds'),
+                'format': 'xlsx',
+            })
+            with urlopen(console_url + '/api/export?' + query, timeout=2) as response:
+                self.assertEqual(
+                    response.headers.get_content_type(),
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                )
+                self.assertTrue(response.read().startswith(b'PK'))
         finally:
             console_server.shutdown()
             console_server.server_close()

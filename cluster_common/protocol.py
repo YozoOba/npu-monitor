@@ -13,6 +13,7 @@ from . import PROTOCOL_VERSION
 
 
 NODE_ID_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+CLUSTER_ID_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
 
 
 class ProtocolError(ValueError):
@@ -80,8 +81,15 @@ def _number(value, name, minimum=None, maximum=None):
     return value
 
 
-def sample_identity(node_id, collected_at):
-    canonical = '{}\n{}'.format(node_id, collected_at).encode('utf-8')
+def sample_identity(node_id, collected_at, cluster_id='default'):
+    # Preserve v1 identities for the default cluster so queued samples and
+    # existing databases remain idempotent during rolling upgrades.
+    if cluster_id == 'default':
+        canonical = '{}\n{}'.format(node_id, collected_at).encode('utf-8')
+    else:
+        canonical = '{}\n{}\n{}'.format(
+            cluster_id, node_id, collected_at
+        ).encode('utf-8')
     return hashlib.sha256(canonical).hexdigest()
 
 
@@ -98,6 +106,9 @@ def normalize_sample(payload, received_at=None, max_future_seconds=300):
     node_name = payload.get('node_name') or node_id
     if not isinstance(node_name, str) or not node_name.strip() or len(node_name) > 255:
         raise ProtocolError('node_name must be a non-empty string up to 255 characters')
+    cluster_id = payload.get('cluster_id', 'default')
+    if not isinstance(cluster_id, str) or not CLUSTER_ID_PATTERN.fullmatch(cluster_id):
+        raise ProtocolError('cluster_id has an invalid format')
 
     collected = parse_timestamp(payload.get('collected_at'))
     received_at = received_at or utc_now()
@@ -156,7 +167,8 @@ def normalize_sample(payload, received_at=None, max_future_seconds=300):
         status = 'failed'
     normalized = {
         'protocol_version': PROTOCOL_VERSION,
-        'sample_id': sample_identity(node_id, collected_text),
+        'sample_id': sample_identity(node_id, collected_text, cluster_id),
+        'cluster_id': cluster_id,
         'node_id': node_id,
         'node_name': node_name.strip(),
         'collected_at': collected_text,

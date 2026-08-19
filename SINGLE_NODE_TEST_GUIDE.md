@@ -91,7 +91,7 @@ OK
 
 其中：
 
-- 14 项集群测试覆盖协议、SQLite、去重、冲突检测、HTTP 接收、补传队列状态恢复和 Console；
+- 30 项集群测试覆盖协议、SQLite 升级、去重、查询筛选、告警、报表导出、HTTP 接收、补传队列状态恢复和 Console；
 - 14 项原单机测试用于确认原有 `npu-smi` 解析、CSV 和进程逻辑没有回归；
 - 自动化测试使用临时目录，不会修改正式数据。
 
@@ -204,7 +204,7 @@ PY
 ```text
 status: healthy
 database_integrity: ok
-schema_version: 1
+schema_version: 2
 sample_count: 0
 ```
 
@@ -680,7 +680,7 @@ python3 -m collector.app --check-db
 
 ```text
 database_integrity: ok
-schema_version: 1
+schema_version: 2
 node_count: 1
 sample_count: greater than 0
 ```
@@ -691,7 +691,7 @@ sample_count: greater than 0
 
 满足以下全部条件后，单机测试通过：
 
-- 14 项集群自动化测试全部通过；
+- 30 项集群自动化测试全部通过；
 - 14 项原单机回归测试全部通过；
 - 真实解析能够稳定识别 8 张 910B 卡；
 - 卡号、利用率和 HBM 与 `npu-smi info` 一致；

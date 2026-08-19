@@ -17,6 +17,7 @@ Required environment:
 Recommended environment:
   NPU_AGENT_NODE_ID       Stable node ID (default: host short hostname)
   NPU_AGENT_NODE_NAME     Display name (default: host hostname)
+  NPU_AGENT_CLUSTER_ID    Cluster group (default: default)
 
 Optional container settings:
   NPU_AGENT_CONTAINER             default: npu-monitor-agent
@@ -100,6 +101,7 @@ docker_args=(
     -e "NPU_AGENT_COLLECTOR_URL=$NPU_AGENT_COLLECTOR_URL"
     -e "NPU_AGENT_NODE_ID=${NPU_AGENT_NODE_ID:-$HOST_SHORT_NAME}"
     -e "NPU_AGENT_NODE_NAME=${NPU_AGENT_NODE_NAME:-$HOST_FULL_NAME}"
+    -e "NPU_AGENT_CLUSTER_ID=${NPU_AGENT_CLUSTER_ID:-default}"
     -e NPU_AGENT_DATA_DIR=/work/monitor/runtime-data/agent
 )
 
@@ -148,6 +150,7 @@ container_id="$(docker "${docker_args[@]}" "$IMAGE_REF" \
 
 print_created "Agent" "$CONTAINER_NAME" "$container_id" "$IMAGE_REF" "$HOST_PROJECT_DIR"
 echo "  node_id:    ${NPU_AGENT_NODE_ID:-$HOST_SHORT_NAME}"
+echo "  cluster_id: ${NPU_AGENT_CLUSTER_ID:-default}"
 echo "  collector:  $NPU_AGENT_COLLECTOR_URL"
 echo
 echo "Checks:"
