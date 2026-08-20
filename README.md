@@ -187,6 +187,10 @@ Agent 容器始终使用 `--privileged=true`，并动态发现宿主机的
 910B/910C文件齐全时自动保留。也可以在创建容器前设置
 `NPU_AGENT_HCCL_MOUNTS=disabled` 或 `enabled` 强制覆盖。
 
+910C按 `npu-smi info` 的 `Phy-ID 0..15` 监控16个逻辑Die；Agent发现编号
+超过默认的8时会自动扩展预期数量。正式部署910C时仍建议显式设置
+`NPU_AGENT_EXPECTED_CARDS=16`，以便第一次采样就能准确发现任意缺失Die。
+
 不要在容器中使用 `nohup python3 ... &`。已有僵尸进程不能被 `kill`，只能由父进程回收或通过停止旧容器清除。
 
 可将下面的命令配置为 Docker 健康检查：

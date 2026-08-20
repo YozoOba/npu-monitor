@@ -4,14 +4,31 @@ import subprocess
 
 def _parse_hbm(text):
     matches = re.findall(r'(\d+)\s*/\s*(\d+)', text)
-    if not matches:
+    usable = [(used, total) for used, total in matches if int(total) > 0]
+    if not usable:
         return None, None
-    used, total = matches[-1]
+    # Some products print both Memory/HBM and Hugepages as ratios, but their
+    # column order differs.  The last ratio with a non-zero capacity selects
+    # the actual device memory while ignoring placeholders such as ``0 / 0``.
+    used, total = usable[-1]
     return int(used), int(total)
 
 
+def _memory_column_index(lines):
+    """Locate the product-specific device-memory column from table headers."""
+    fallback = None
+    for line in lines:
+        parts = [part.strip().lower() for part in line.split('|')]
+        for index, part in enumerate(parts):
+            if 'hbm-usage' in part:
+                return index
+            if 'memory-usage' in part:
+                fallback = index
+    return fallback
+
+
 def _parse_device_id(parts, fallback):
-    """Return the logical Device id from the second npu-smi table row.
+    """Return the logical Device/Phy-ID from the second npu-smi table row.
 
     Ascend products do not always use the first-row NPU number as the logical
     device id.  For example, a 310P3 board can report physical NPU numbers
@@ -19,7 +36,8 @@ def _parse_device_id(parts, fallback):
     ``0..7``.  The latter is the stable identity used by applications and by
     this monitor.
 
-    Real npu-smi output puts ``Chip Device`` in the first table cell.  The
+    Real npu-smi output puts ``Chip Device`` or ``Chip Phy-ID`` in the first
+    table cell.  The latter is 0..15 on an eight-card, dual-die 910C.  The
     second branch keeps compatibility with the older synthetic/test layout
     where Chip and Device were separated by a pipe.
     """
@@ -38,6 +56,7 @@ def parse_npu_smi_output(output):
     """Keep the parser shape proven by the original single-node monitor."""
     cards = {}
     lines = output.splitlines()
+    memory_column = _memory_column_index(lines)
     for index, line in enumerate(lines[:-1]):
         # A record header contains a numeric physical NPU id followed by a
         # product name such as 910B or 310P3.  Requiring a letter in the
@@ -57,7 +76,12 @@ def parse_npu_smi_output(output):
         utilization = float(utilization_match.group(1))
         if not 0.0 <= utilization <= 100.0 or card_id in cards:
             continue
-        hbm_used, hbm_total = _parse_hbm(parts[3])
+        memory_text = (
+            parts[memory_column]
+            if memory_column is not None and memory_column < len(parts)
+            else ' | '.join(parts[3:])
+        )
+        hbm_used, hbm_total = _parse_hbm(memory_text)
         cards[card_id] = {
             'card_id': card_id,
             'utilization': utilization,

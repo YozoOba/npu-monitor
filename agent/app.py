@@ -43,7 +43,19 @@ def handle_signal(signum, _frame):
     STOP_EVENT.set()
 
 
-def build_sample(cards, collected_at):
+def resolve_expected_cards(cards, minimum):
+    """Expand the configured minimum for products with more logical dies."""
+    if not cards:
+        return minimum
+    highest_id = max(card['card_id'] for card in cards)
+    return max(minimum, len(cards), highest_id + 1)
+
+
+def build_sample(cards, collected_at, expected_cards=None):
+    expected_cards = resolve_expected_cards(
+        cards,
+        config.EXPECTED_CARDS if expected_cards is None else expected_cards,
+    )
     return normalize_sample({
         'protocol_version': PROTOCOL_VERSION,
         'node_id': config.NODE_ID,
@@ -51,7 +63,7 @@ def build_sample(cards, collected_at):
         'cluster_id': config.CLUSTER_ID,
         'collected_at': collected_at.isoformat(timespec='seconds'),
         'collect_interval': config.COLLECT_INTERVAL,
-        'expected_cards': config.EXPECTED_CARDS,
+        'expected_cards': expected_cards,
         'cards': cards,
     }, received_at=collected_at)
 
@@ -94,6 +106,7 @@ def run(once=False):
     )
     worker.start()
     last_cleanup_day = None
+    expected_cards = config.EXPECTED_CARDS
     exit_code = 0
     try:
         while not STOP_EVENT.is_set():
@@ -128,7 +141,14 @@ def run(once=False):
                     LOGGER.error('%s queued samples expired before upload', expired)
                 last_cleanup_day = collected_at.date()
             cards, collection_error = collect(config.NPU_SMI_BIN, config.COMMAND_TIMEOUT)
-            sample = build_sample(cards, collected_at)
+            detected_expected = resolve_expected_cards(cards, expected_cards)
+            if detected_expected > expected_cards:
+                LOGGER.info(
+                    'expanded expected logical NPU count from %s to %s',
+                    expected_cards, detected_expected,
+                )
+                expected_cards = detected_expected
+            sample = build_sample(cards, collected_at, expected_cards)
             local_error = None
             try:
                 capacity_ok, capacity = check_capacity(
