@@ -169,6 +169,10 @@ chmod +x setup.sh && ./setup.sh
 
 当前离线集群不依赖 Docker `--init`。项目提供 `deploy/mini_init.py` 作为容器 PID 1，负责转发信号和回收孤儿进程；不需要安装软件、重新制作镜像或重启 Docker daemon。
 
+Collector使用自身的接收时间判断节点是否 `online/stale/offline`，固定的Agent
+时钟偏差不会导致节点离线；时钟告警只关注相邻采样之间的偏移变化。Agent的
+原始采样时间仍用于历史数据和断线补传。
+
 集群版直接复用本机已有镜像：
 
 ```bash

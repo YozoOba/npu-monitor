@@ -105,6 +105,68 @@ class StorageTests(unittest.TestCase):
         self.storage.ingest(older, NOW + timedelta(seconds=1))
         values = self.storage.latest_samples()
         self.assertEqual(values[0]['sample']['sample_id'], latest['sample_id'])
+        self.assertEqual(
+            values[0]['latest_received_at'],
+            (NOW + timedelta(seconds=1)).isoformat(timespec='seconds'),
+        )
+
+    def test_fixed_agent_clock_offset_uses_collector_receipt_for_freshness(self):
+        collected = NOW - timedelta(minutes=4)
+        value = normalize_sample(
+            payload(node='slow-clock-node', collected_at=collected),
+            received_at=NOW,
+        )
+        self.storage.ingest(value, NOW)
+
+        fresh = self.storage.build_snapshot(
+            120, 300, now=NOW + timedelta(seconds=10)
+        )
+        node = fresh['nodes'][0]
+        self.assertEqual(node['state'], 'online')
+        self.assertEqual(node['age_seconds'], 10)
+        self.assertEqual(node['clock_offset_seconds'], 240)
+        self.assertIsNone(node['clock_drift_seconds'])
+        self.assertFalse(node['clock_skew_warning'])
+
+        stale = self.storage.build_snapshot(
+            120, 300, now=NOW + timedelta(seconds=121)
+        )
+        self.assertEqual(stale['nodes'][0]['state'], 'stale')
+
+    def test_stable_offset_is_ignored_but_relative_clock_jump_warns(self):
+        first_collected = NOW - timedelta(minutes=5)
+        first = normalize_sample(
+            payload(node='offset-node', collected_at=first_collected),
+            received_at=NOW - timedelta(minutes=1),
+        )
+        second_collected = NOW - timedelta(minutes=4)
+        second = normalize_sample(
+            payload(node='offset-node', collected_at=second_collected),
+            received_at=NOW,
+        )
+        self.storage.ingest(first, NOW - timedelta(minutes=1))
+        self.storage.ingest(second, NOW)
+
+        stable = self.storage.build_snapshot(120, 300, now=NOW)
+        self.assertEqual(stable['nodes'][0]['clock_offset_seconds'], 240)
+        self.assertEqual(stable['nodes'][0]['clock_drift_seconds'], 0)
+        self.assertFalse(stable['nodes'][0]['clock_skew_warning'])
+        self.assertEqual(self.storage.sync_alerts(stable, NOW), 0)
+
+        jumped_collected = second_collected + timedelta(minutes=2)
+        jumped = normalize_sample(
+            payload(node='offset-node', collected_at=jumped_collected),
+            received_at=NOW + timedelta(minutes=1),
+        )
+        self.storage.ingest(jumped, NOW + timedelta(minutes=1))
+        changed = self.storage.build_snapshot(
+            120, 300, now=NOW + timedelta(minutes=1)
+        )
+        self.assertEqual(changed['nodes'][0]['clock_drift_seconds'], -60)
+        self.assertTrue(changed['nodes'][0]['clock_skew_warning'])
+        self.assertEqual(
+            self.storage.sync_alerts(changed, NOW + timedelta(minutes=1)), 1
+        )
 
     def test_snapshot_uses_card_weighting_and_marks_offline(self):
         self.storage.ingest(normalized(node='node-a'), NOW)
@@ -127,7 +189,7 @@ class StorageTests(unittest.TestCase):
         snapshot = self.storage.build_snapshot(
             120, 300, now=NOW + timedelta(seconds=121)
         )
-        self.assertEqual(snapshot['snapshot_version'], 3)
+        self.assertEqual(snapshot['snapshot_version'], 4)
         self.assertEqual(snapshot['node_counts']['stale'], 1)
         self.assertEqual(snapshot['registered_expected_cards'], 2)
         self.assertEqual(snapshot['fresh_expected_cards'], 0)

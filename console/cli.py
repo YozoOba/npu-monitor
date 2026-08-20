@@ -28,12 +28,12 @@ def print_summary(snapshot):
         )
     )
     print('Registered capacity: {} cards  Last known: {} cards'.format(registered, last_known))
-    print('Fresh samples: {}/{}  fleet freshness={}%%  reporting completeness={}%%'.format(
+    print('Fresh samples: {}/{}  fleet freshness={}%  reporting completeness={}%'.format(
         fresh, registered,
         format_number(snapshot.get('fleet_freshness_coverage_percent')),
         format_number(snapshot.get('reporting_sample_coverage_percent')),
     ))
-    print('Current utilization={}%%  HBM={}%%  busy={} idle={}  active alerts={}'.format(
+    print('Current utilization={}%  HBM={}%  busy={} idle={}  active alerts={}'.format(
         format_number(snapshot['utilization_avg']), format_number(snapshot['hbm_percent']),
         snapshot.get('busy_cards', 0), snapshot.get('idle_cards', 0),
         snapshot.get('active_alert_count', '-'),

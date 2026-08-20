@@ -233,6 +233,15 @@ class CollectorStorage:
                         collected_epoch, received_text, sample['collect_interval'],
                         sample['expected_cards'], sample['node_id'],
                     ))
+                else:
+                    # Receipt time represents connectivity to the Collector
+                    # and must advance even when an older queued sample is
+                    # backfilled.  The latest measurement itself remains
+                    # selected by collected_epoch.
+                    self.connection.execute('''
+                        UPDATE nodes SET latest_received_at = ?
+                        WHERE node_id = ?
+                    ''', (received_text, sample['node_id']))
                 self.connection.execute('COMMIT')
             except Exception:
                 self.connection.execute('ROLLBACK')
@@ -249,21 +258,34 @@ class CollectorStorage:
             rows = self.connection.execute('''
                 SELECT n.node_id, n.cluster_id, n.node_name,
                        n.latest_collected_epoch, n.latest_received_at,
-                       n.collect_interval, n.expected_cards, s.normalized_json
+                       n.collect_interval, n.expected_cards,
+                       s.received_at AS sample_received_at, s.normalized_json
                 FROM nodes n
                 LEFT JOIN samples s ON s.sample_id = n.latest_sample_id
                 {} ORDER BY n.cluster_id, n.node_id
             '''.format(where), parameters).fetchall()
-        values = []
-        for row in rows:
-            value = dict(row)
-            value['sample'] = (
-                json.loads(value.pop('normalized_json'))
-                if value.get('normalized_json') else None
-            )
-            if value['sample'] is not None:
-                value['sample'].setdefault('cluster_id', value['cluster_id'])
-            values.append(value)
+            values = []
+            for row in rows:
+                value = dict(row)
+                previous = self.connection.execute('''
+                    SELECT collected_epoch, received_at
+                    FROM samples
+                    WHERE node_id = ? AND collected_epoch < ?
+                    ORDER BY collected_epoch DESC LIMIT 1
+                ''', (value['node_id'], value['latest_collected_epoch'])).fetchone()
+                value['previous_collected_epoch'] = (
+                    previous['collected_epoch'] if previous else None
+                )
+                value['previous_received_at'] = (
+                    previous['received_at'] if previous else None
+                )
+                value['sample'] = (
+                    json.loads(value.pop('normalized_json'))
+                    if value.get('normalized_json') else None
+                )
+                if value['sample'] is not None:
+                    value['sample'].setdefault('cluster_id', value['cluster_id'])
+                values.append(value)
         return values
 
     @staticmethod
@@ -332,7 +354,10 @@ class CollectorStorage:
         nodes = []
         for record in self.latest_samples(cluster_id):
             sample = record['sample']
-            age = max(0, int(now.timestamp()) - record['latest_collected_epoch'])
+            last_received = parse_timestamp(
+                record['latest_received_at']
+            ).astimezone(timezone.utc)
+            age = max(0, int((now - last_received).total_seconds()))
             interval = record['collect_interval']
             stale_after = max(stale_floor, interval * 2)
             offline_after = max(offline_floor, interval * 5)
@@ -352,14 +377,35 @@ class CollectorStorage:
             hbm_cards = [card for card in cards if card['hbm_total_mb']]
             hbm_used = sum(card['hbm_used_mb'] for card in hbm_cards)
             hbm_total = sum(card['hbm_total_mb'] for card in hbm_cards)
-            received = parse_timestamp(
-                record['latest_received_at']
-            ).astimezone(timezone.utc)
+            sample_received = (
+                parse_timestamp(record['sample_received_at']).astimezone(timezone.utc)
+                if record.get('sample_received_at') else None
+            )
             collected = (
                 parse_timestamp(sample['collected_at']).astimezone(timezone.utc)
                 if sample else None
             )
-            clock_skew = int((received - collected).total_seconds()) if collected else None
+            clock_offset = (
+                int((sample_received - collected).total_seconds())
+                if sample_received and collected else None
+            )
+            previous_received = (
+                parse_timestamp(record['previous_received_at']).astimezone(timezone.utc)
+                if record.get('previous_received_at') else None
+            )
+            previous_collected = (
+                datetime.fromtimestamp(
+                    record['previous_collected_epoch'], timezone.utc
+                ) if record.get('previous_collected_epoch') is not None else None
+            )
+            previous_offset = (
+                int((previous_received - previous_collected).total_seconds())
+                if previous_received and previous_collected else None
+            )
+            clock_drift = (
+                clock_offset - previous_offset
+                if clock_offset is not None and previous_offset is not None else None
+            )
             nodes.append({
                 'cluster_id': record['cluster_id'],
                 'node_id': record['node_id'],
@@ -368,10 +414,14 @@ class CollectorStorage:
                 'age_seconds': age,
                 'last_collected_at': sample['collected_at'] if sample else None,
                 'last_received_at': record['latest_received_at'],
-                'clock_skew_seconds': clock_skew,
+                'clock_offset_seconds': clock_offset,
+                'clock_drift_seconds': clock_drift,
+                # Backward-compatible field name. It now represents the
+                # relative offset change, not a fixed Agent/Collector offset.
+                'clock_skew_seconds': clock_drift,
                 'clock_skew_warning': (
-                    abs(clock_skew) > clock_skew_warn
-                    if clock_skew is not None else False
+                    abs(clock_drift) > clock_skew_warn
+                    if clock_drift is not None else False
                 ),
                 'sample_status': sample['status'] if sample else 'missing',
                 'expected_cards': record['expected_cards'],
@@ -404,7 +454,7 @@ class CollectorStorage:
         snapshot = self._aggregate_nodes(
             nodes, now, busy_utilization, idle_utilization
         )
-        snapshot['snapshot_version'] = 3
+        snapshot['snapshot_version'] = 4
         snapshot['cluster_id'] = cluster_id
         grouped = {}
         for node in nodes:
@@ -588,10 +638,13 @@ class CollectorStorage:
                     'node_id': node['node_id'],
                     'alert_type': 'clock_skew',
                     'severity': 'warning',
-                    'message': '{} clock skew is {} seconds'.format(
-                        node['node_id'], node['clock_skew_seconds']
+                    'message': '{} clock offset changed by {} seconds'.format(
+                        node['node_id'], node['clock_drift_seconds']
                     ),
-                    'details': {'clock_skew_seconds': node['clock_skew_seconds']},
+                    'details': {
+                        'clock_offset_seconds': node['clock_offset_seconds'],
+                        'clock_drift_seconds': node['clock_drift_seconds'],
+                    },
                 }
         return candidates
 
