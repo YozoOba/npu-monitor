@@ -15,6 +15,7 @@ from cluster_common.protocol import ProtocolError, normalize_sample, parse_times
 from cluster_common.storage_health import check_capacity
 from . import __version__
 from . import config
+from .management import ConfirmationMismatchError, ManagementService
 from .storage import CollectorStorage, ConflictingSampleError
 
 
@@ -53,6 +54,9 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 class CollectorApplication:
     def __init__(self, storage):
         self.storage = storage
+        self.management = ManagementService(
+            storage, config.ARCHIVE_DATABASE_PATH, config.BACKUP_DIR
+        )
         self.snapshot_lock = threading.Lock()
         self.snapshot = None
         self.stop_event = threading.Event()
@@ -130,7 +134,32 @@ def make_handler(application):
             self.wfile.write(payload)
 
         def do_POST(self):
-            if urlparse(self.path).path != '/api/v1/samples':
+            path = urlparse(self.path).path
+            if path in (
+                    '/internal/v1/admin/preview',
+                    '/internal/v1/admin/execute'):
+                raw_length = self.headers.get('Content-Length')
+                try:
+                    length = int(raw_length)
+                    if length <= 0 or length > config.MAX_BODY_BYTES:
+                        raise ValueError('request body size is invalid')
+                    request = json.loads(self.rfile.read(length).decode('utf-8'))
+                    if path.endswith('/preview'):
+                        self.send_json(200, application.management.preview(request))
+                    else:
+                        result = application.management.execute(request)
+                        application.refresh_snapshot()
+                        self.send_json(200, result)
+                except ConfirmationMismatchError as exc:
+                    self.send_json(409, {'error': str(exc)})
+                except (TypeError, ValueError, UnicodeDecodeError,
+                        json.JSONDecodeError, ProtocolError) as exc:
+                    self.send_json(400, {'error': str(exc)})
+                except Exception as exc:
+                    LOGGER.exception('management operation failed')
+                    self.send_json(500, {'error': str(exc)})
+                return
+            if path != '/api/v1/samples':
                 self.send_json(404, {'error': 'not found'})
                 return
             raw_length = self.headers.get('Content-Length')
@@ -332,6 +361,16 @@ def make_handler(application):
                     })
                     self.send_json(200, result)
                 except (ValueError, ProtocolError) as exc:
+                    self.send_json(400, {'error': str(exc)})
+                return
+            if parsed.path == '/internal/v1/admin/operations':
+                try:
+                    query = parse_qs(parsed.query)
+                    self.send_json(200, application.management.operations(
+                        query_int(query, 'page', 1, 1, 1000000),
+                        query_int(query, 'page_size', 50, 1, 500),
+                    ))
+                except ValueError as exc:
                     self.send_json(400, {'error': str(exc)})
                 return
             self.send_json(404, {'error': 'not found'})

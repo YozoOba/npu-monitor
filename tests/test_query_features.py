@@ -194,7 +194,7 @@ class QueryStorageTests(unittest.TestCase):
         connection.commit()
         connection.close()
         self.storage = CollectorStorage(self.path)
-        self.assertEqual(self.storage.health()['schema_version'], 2)
+        self.assertEqual(self.storage.health()['schema_version'], 3)
         self.assertEqual(self.storage.health()['sample_count'], 1)
         self.assertFalse(self.storage.ingest(current, NOW + timedelta(seconds=2)))
         columns = self.storage.connection.execute(

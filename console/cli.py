@@ -120,6 +120,31 @@ def main(argv=None):
     export.add_argument('--card', type=int)
     export.add_argument('--status', choices=['complete', 'partial', 'failed'])
 
+    node_update = subparsers.add_parser('node-update')
+    node_update.add_argument('--node', required=True)
+    node_update.add_argument('--name')
+    node_update.add_argument('--cluster')
+    node_update.add_argument('--confirm', help='confirmation token returned by preview')
+
+    node_delete = subparsers.add_parser('node-delete')
+    node_delete.add_argument('--node', required=True)
+    node_delete.add_argument('--hot-only', action='store_true')
+    node_delete.add_argument('--confirm', help='confirmation token returned by preview')
+
+    data_delete = subparsers.add_parser('data-delete')
+    add_range_arguments(data_delete)
+    data_delete.add_argument('--sample-id')
+    data_delete.add_argument('--node')
+    data_delete.add_argument('--cluster')
+    data_delete.add_argument('--status', choices=['complete', 'partial', 'failed'])
+    data_delete.add_argument('--keep-alerts', action='store_true')
+    data_delete.add_argument('--hot-only', action='store_true')
+    data_delete.add_argument('--confirm', help='confirmation token returned by preview')
+
+    operations = subparsers.add_parser('operations')
+    operations.add_argument('--page', type=int, default=1)
+    operations.add_argument('--page-size', type=int, default=50)
+
     args = parser.parse_args(argv)
     command = args.command or 'summary'
     client = CollectorClient(args.collector_url, config.HTTP_TIMEOUT)
@@ -160,6 +185,44 @@ def main(argv=None):
                 args.cluster, args.card, args.status,
             )
             print('exported {} rows to {}'.format(count, output))
+        elif command in ('node-update', 'node-delete', 'data-delete'):
+            if command == 'node-update':
+                request = {
+                    'operation': 'update_node', 'node_id': args.node,
+                    'node_name': args.name, 'cluster_id': args.cluster,
+                }
+            elif command == 'node-delete':
+                request = {
+                    'operation': 'delete_node', 'node_id': args.node,
+                    'include_archive': not args.hot_only,
+                }
+            else:
+                request = {
+                    'operation': 'delete_samples',
+                    'sample_id': args.sample_id,
+                    'node_id': args.node, 'cluster_id': args.cluster,
+                    'status': args.status,
+                    'include_archive': not args.hot_only,
+                    'delete_alerts': not args.keep_alerts,
+                }
+                if not args.sample_id:
+                    start, end = time_range(args)
+                    request.update({'start': start, 'end': end})
+            if args.confirm:
+                request['confirmation_token'] = args.confirm
+                value = client.management_execute(request)
+            else:
+                value = client.management_preview(request)
+                value['next_step'] = (
+                    'repeat the same command with --confirm {}'.format(
+                        value['confirmation_token']
+                    )
+                )
+            print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+        elif command == 'operations':
+            print(json.dumps(client.management_operations(
+                args.page, args.page_size
+            ), ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     except Exception as exc:
         print('query failed: {}'.format(exc), file=sys.stderr)

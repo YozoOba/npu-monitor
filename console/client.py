@@ -1,10 +1,10 @@
 import json
 try:
     from urllib.parse import urlencode
-    from urllib.request import urlopen
+    from urllib.request import Request, urlopen
 except ImportError:  # pragma: no cover
     from urllib import urlencode
-    from urllib2 import urlopen
+    from urllib2 import Request, urlopen
 
 
 class CollectorClient:
@@ -18,6 +18,17 @@ class CollectorClient:
             filtered = {key: value for key, value in parameters.items() if value is not None}
             url += '?' + urlencode(filtered)
         response = urlopen(url, timeout=self.timeout)
+        return json.loads(response.read().decode('utf-8'))
+
+    def _post(self, path, value):
+        payload = json.dumps(
+            value, ensure_ascii=False, sort_keys=True
+        ).encode('utf-8')
+        request = Request(
+            self.base_url + path, data=payload,
+            headers={'Content-Type': 'application/json'},
+        )
+        response = urlopen(request, timeout=self.timeout)
         return json.loads(response.read().decode('utf-8'))
 
     def health(self):
@@ -62,4 +73,15 @@ class CollectorClient:
             'start': start, 'end': end, 'page': page, 'page_size': page_size,
             'node_id': node_id, 'cluster_id': cluster_id,
             'severity': severity, 'status': status, 'type': alert_type,
+        })
+
+    def management_preview(self, request):
+        return self._post('/internal/v1/admin/preview', request)
+
+    def management_execute(self, request):
+        return self._post('/internal/v1/admin/execute', request)
+
+    def management_operations(self, page=1, page_size=50):
+        return self._get('/internal/v1/admin/operations', {
+            'page': page, 'page_size': page_size,
         })

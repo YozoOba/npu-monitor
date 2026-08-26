@@ -114,6 +114,7 @@ Collector 数据保存在主节点：
 ├── cluster.sqlite3-shm
 ├── archive/
 │   └── cluster-archive.sqlite3
+├── backups/                 # 管理操作执行前的自动校验备份
 └── latest_snapshot.json
 ```
 
@@ -121,7 +122,7 @@ Collector 数据保存在主节点：
 
 Agent 继续将每日 CSV 作为可靠原始记录，并在每天第一次采集时用 Python 标准库原子更新月度 `stats_YYYY-MM.xlsx`。工作簿按 UTC 日期创建 Sheet，不依赖 `openpyxl` 等第三方包；当前日期的数据会在次日完成后进入 XLSX，监控开始后的数据缺失日期以空 Sheet 表示。
 
-Collector 在 SQLite 中持久化原始采样、逐卡数据、节点最新状态、集群分组和告警生命周期。旧 schema 1 数据库会自动原地升级到 schema 2，不需要清库。Console 支持自定义时间、节点、单卡和集群筛选，原始采样分页，告警查询，以及最长默认 31 天的 CSV/XLSX 导出。
+Collector 在 SQLite 中持久化原始采样、逐卡数据、节点最新状态、集群分组、告警生命周期和数据管理审计。旧 schema 1/2 数据库会自动原地升级到 schema 3，不需要清库。Console 支持自定义时间、节点、单卡和集群筛选，原始采样与告警筛选分页，最长默认 31 天的 CSV/XLSX 导出，以及带影响预览和自动备份的错误节点/错误数据管理。
 
 ## 6. 日志和容器生命周期
 

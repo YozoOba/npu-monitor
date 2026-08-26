@@ -19,6 +19,9 @@ ARCHIVE_DIR = os.path.abspath(os.environ.get(
     'NPU_COLLECTOR_ARCHIVE_DIR', os.path.join(DATA_DIR, 'archive')
 ))
 ARCHIVE_DATABASE_PATH = os.path.join(ARCHIVE_DIR, 'cluster-archive.sqlite3')
+BACKUP_DIR = os.path.abspath(os.environ.get(
+    'NPU_COLLECTOR_BACKUP_DIR', os.path.join(DATA_DIR, 'backups')
+))
 HOST = os.environ.get('NPU_COLLECTOR_HOST', '0.0.0.0')
 PORT = env_int('NPU_COLLECTOR_PORT', 18080, 1)
 RETENTION_DAYS = env_int('NPU_COLLECTOR_RETENTION_DAYS', 180, 1)
@@ -43,3 +46,4 @@ def validate():
         raise ValueError('utilization thresholds must be <= 100')
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    os.makedirs(BACKUP_DIR, exist_ok=True)

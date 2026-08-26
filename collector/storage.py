@@ -19,7 +19,7 @@ def _utc_text(epoch):
 
 
 class CollectorStorage:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, path):
         self.path = path
@@ -49,7 +49,7 @@ class CollectorStorage:
             database_version = self.connection.execute(
                 'PRAGMA user_version'
             ).fetchone()[0]
-            if database_version not in (0, 1, self.SCHEMA_VERSION):
+            if database_version not in (0, 1, 2, self.SCHEMA_VERSION):
                 raise RuntimeError(
                     'unsupported database schema version {} (application expects {})'.format(
                         database_version, self.SCHEMA_VERSION
@@ -111,6 +111,15 @@ class CollectorStorage:
                     message TEXT NOT NULL,
                     details_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS admin_operations (
+                    operation_id TEXT PRIMARY KEY,
+                    operation TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    criteria_json TEXT NOT NULL,
+                    impact_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    backups_json TEXT NOT NULL
+                );
             ''')
             if database_version == 1:
                 for table in ('samples', 'cards', 'nodes'):
@@ -138,6 +147,8 @@ class CollectorStorage:
                     ON alerts(cluster_id, node_id, status, severity);
                 CREATE UNIQUE INDEX IF NOT EXISTS alerts_one_active_key
                     ON alerts(alert_key) WHERE status = 'active';
+                CREATE INDEX IF NOT EXISTS admin_operations_time
+                    ON admin_operations(created_at);
             ''')
             if database_version != self.SCHEMA_VERSION:
                 self.connection.execute(
