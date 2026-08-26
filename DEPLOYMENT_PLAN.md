@@ -112,10 +112,12 @@ Collector 数据保存在主节点：
 ├── cluster.sqlite3
 ├── cluster.sqlite3-wal
 ├── cluster.sqlite3-shm
+├── archive/
+│   └── cluster-archive.sqlite3
 └── latest_snapshot.json
 ```
 
-默认本地采样、月度 XLSX 和 Collector 历史保留 180 天；Agent 待上传队列默认最多保留 7 天、20000 个文件或 512 MB。
+默认热目录和 Collector 在线查询库保留 180 天；超过 180 天的数据转入 Agent 文件归档或 Collector 独立 SQLite 归档，不直接删除。归档默认无限期保留，容量规划和备份必须覆盖 `runtime-data/agent/archive/` 与 `runtime-data/collector/archive/`。Agent 待上传队列默认最多保留 7 天、20000 个文件或 512 MB，超期队列先进入 `rejected`，随后按热窗口归档。
 
 Agent 继续将每日 CSV 作为可靠原始记录，并在每天第一次采集时用 Python 标准库原子更新月度 `stats_YYYY-MM.xlsx`。工作簿按 UTC 日期创建 Sheet，不依赖 `openpyxl` 等第三方包；当前日期的数据会在次日完成后进入 XLSX，监控开始后的数据缺失日期以空 Sheet 表示。
 

@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import time
@@ -215,6 +216,74 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(values[0]['utilization_avg'], 50.0)
         self.assertEqual(values[0]['card_samples'], 2)
         self.assertEqual(values[0]['coverage_percent'], 100.0)
+
+    def test_cold_data_is_verified_in_archive_before_hot_removal(self):
+        value = normalized()
+        self.storage.ingest(value, NOW)
+        self.storage.connection.execute('''
+            INSERT INTO alerts (
+                alert_id, alert_key, cluster_id, node_id, alert_type,
+                severity, status, started_epoch, started_at, last_seen_epoch,
+                last_seen_at, resolved_epoch, resolved_at, message, details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            'old-alert', 'old-key', 'default', 'node-01', 'node_stale',
+            'warning', 'resolved', int(NOW.timestamp()), NOW.isoformat(),
+            int(NOW.timestamp()), NOW.isoformat(), int(NOW.timestamp()),
+            NOW.isoformat(), 'resolved', '{}',
+        ))
+        archive_path = os.path.join(self.temporary.name, 'archive', 'cold.db')
+
+        archived = self.storage.archive_before(
+            int((NOW + timedelta(seconds=1)).timestamp()), archive_path
+        )
+        self.assertEqual(archived, (1, 1))
+        self.assertEqual(self.storage.health()['sample_count'], 0)
+
+        archive = sqlite3.connect(archive_path)
+        try:
+            self.assertEqual(
+                archive.execute('SELECT COUNT(*) FROM samples').fetchone()[0], 1
+            )
+            self.assertEqual(
+                archive.execute('SELECT COUNT(*) FROM cards').fetchone()[0], 2
+            )
+            self.assertEqual(
+                archive.execute('SELECT COUNT(*) FROM alerts').fetchone()[0], 1
+            )
+        finally:
+            archive.close()
+        self.assertEqual(self.storage.archive_before(
+            int((NOW + timedelta(seconds=1)).timestamp()), archive_path
+        ), (0, 0))
+
+    def test_archive_conflict_keeps_hot_data(self):
+        self.storage.ingest(normalized(), NOW)
+        archive_path = os.path.join(self.temporary.name, 'archive-conflict.sqlite3')
+        archive = sqlite3.connect(archive_path)
+        try:
+            CollectorStorage._initialize_archive(archive)
+            source = list(self.storage.connection.execute('''
+                SELECT sample_id, cluster_id, node_id, node_name,
+                       collected_epoch, collected_at, received_at,
+                       collect_interval, expected_cards, collected_cards,
+                       sample_status, coverage_percent, payload_hash,
+                       normalized_json
+                FROM samples
+            ''').fetchone())
+            source[12] = 'different-payload-hash'
+            archive.execute('''
+                INSERT INTO samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', source)
+            archive.commit()
+        finally:
+            archive.close()
+
+        with self.assertRaisesRegex(RuntimeError, 'archive payload conflict'):
+            self.storage.archive_before(
+                int((NOW + timedelta(seconds=1)).timestamp()), archive_path
+            )
+        self.assertEqual(self.storage.health()['sample_count'], 1)
 
 
 class HttpAndQueueTests(unittest.TestCase):

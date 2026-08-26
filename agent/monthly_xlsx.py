@@ -1,5 +1,6 @@
 import csv
 from datetime import datetime, timedelta
+import logging
 import math
 import os
 import re
@@ -11,6 +12,7 @@ from xml.sax.saxutils import escape, quoteattr
 CSV_FIELDS = ['timestamp', 'card_id', 'utilization', 'hbm_used_mb', 'hbm_total_mb']
 DAILY_FILE_PATTERN = re.compile(r'^stats_(\d{4}-\d{2}-\d{2})\.csv$')
 MONTHLY_FILE_PATTERN = re.compile(r'^stats_(\d{4}-\d{2})\.xlsx$')
+LOGGER = logging.getLogger('npu_agent.monthly_xlsx')
 
 
 class MonthlyWorkbookError(ValueError):
@@ -337,13 +339,14 @@ def update_monthly_workbooks(daily_dir, monthly_dir, through_date):
     return updated
 
 
-def clean_old_monthly_workbooks(monthly_dir, retention_days, now_date):
+def archive_old_monthly_workbooks(
+        monthly_dir, archive_root, retention_days, now_date):
     cutoff = now_date - timedelta(days=retention_days)
-    deleted = 0
+    archived = 0
     try:
         names = os.listdir(monthly_dir)
     except OSError:
-        return deleted
+        return archived
     for name in names:
         match = MONTHLY_FILE_PATTERN.fullmatch(name)
         if not match:
@@ -362,8 +365,17 @@ def clean_old_monthly_workbooks(monthly_dir, retention_days, now_date):
         if month_end >= cutoff:
             continue
         try:
-            os.remove(os.path.join(monthly_dir, name))
-            deleted += 1
-        except OSError:
-            pass
-    return deleted
+            archive_dir = os.path.join(archive_root, 'monthly')
+            os.makedirs(archive_dir, exist_ok=True)
+            source = os.path.join(monthly_dir, name)
+            target = os.path.join(archive_dir, name)
+            if os.path.exists(target):
+                LOGGER.error(
+                    'archive target already exists; keeping workbook %s', source
+                )
+                continue
+            os.replace(source, target)
+            archived += 1
+        except OSError as exc:
+            LOGGER.error('cannot archive monthly workbook %s: %s', name, exc)
+    return archived

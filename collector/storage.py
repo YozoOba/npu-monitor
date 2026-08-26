@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 
@@ -750,23 +751,229 @@ class CollectorStorage:
         with self.lock:
             return self.connection.execute(query, parameters).fetchone()[0]
 
-    def delete_before(self, cutoff_epoch):
-        with self.lock:
-            self.connection.execute('BEGIN IMMEDIATE')
-            try:
-                cursor = self.connection.execute(
-                    'DELETE FROM samples WHERE collected_epoch < ?', (cutoff_epoch,)
-                )
-                deleted = cursor.rowcount
-                self.connection.execute('''
-                    DELETE FROM alerts
-                    WHERE status = 'resolved' AND last_seen_epoch < ?
-                ''', (cutoff_epoch,))
-                self.connection.execute('COMMIT')
-            except Exception:
-                self.connection.execute('ROLLBACK')
-                raise
-        return deleted
+    @staticmethod
+    def _initialize_archive(connection):
+        connection.execute('PRAGMA journal_mode=DELETE')
+        connection.execute('PRAGMA synchronous=FULL')
+        connection.execute('PRAGMA foreign_keys=ON')
+        connection.executescript('''
+            CREATE TABLE IF NOT EXISTS samples (
+                sample_id TEXT PRIMARY KEY,
+                cluster_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                node_name TEXT NOT NULL,
+                collected_epoch INTEGER NOT NULL,
+                collected_at TEXT NOT NULL,
+                received_at TEXT NOT NULL,
+                collect_interval INTEGER NOT NULL,
+                expected_cards INTEGER NOT NULL,
+                collected_cards INTEGER NOT NULL,
+                sample_status TEXT NOT NULL,
+                coverage_percent REAL NOT NULL,
+                payload_hash TEXT NOT NULL,
+                normalized_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS cards (
+                sample_id TEXT NOT NULL
+                    REFERENCES samples(sample_id) ON DELETE CASCADE,
+                cluster_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                collected_epoch INTEGER NOT NULL,
+                card_id INTEGER NOT NULL,
+                utilization REAL NOT NULL,
+                hbm_used_mb INTEGER,
+                hbm_total_mb INTEGER,
+                PRIMARY KEY(sample_id, card_id)
+            );
+            CREATE TABLE IF NOT EXISTS alerts (
+                alert_id TEXT PRIMARY KEY,
+                alert_key TEXT NOT NULL,
+                cluster_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                alert_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_epoch INTEGER NOT NULL,
+                started_at TEXT NOT NULL,
+                last_seen_epoch INTEGER NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                resolved_epoch INTEGER,
+                resolved_at TEXT,
+                message TEXT NOT NULL,
+                details_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS archive_samples_node_time
+                ON samples(node_id, collected_epoch);
+            CREATE INDEX IF NOT EXISTS archive_samples_cluster_time
+                ON samples(cluster_id, collected_epoch);
+            CREATE INDEX IF NOT EXISTS archive_cards_node_time
+                ON cards(node_id, collected_epoch);
+            CREATE INDEX IF NOT EXISTS archive_alerts_time
+                ON alerts(last_seen_epoch);
+            PRAGMA user_version = 1;
+        ''')
+
+    def archive_before(self, cutoff_epoch, archive_path, batch_size=500):
+        """Move cold samples and resolved alerts to a durable archive DB.
+
+        Each archive transaction commits and is verified before the matching
+        hot rows are removed. A crash between those steps can only leave a
+        duplicate, which is safe and idempotently handled on the next run.
+        """
+        archive_path = str(archive_path)
+        os.makedirs(os.path.dirname(os.path.abspath(archive_path)), exist_ok=True)
+        archive = sqlite3.connect(
+            archive_path, timeout=30, isolation_level=None
+        )
+        archive.row_factory = sqlite3.Row
+        sample_columns = (
+            'sample_id, cluster_id, node_id, node_name, collected_epoch, '
+            'collected_at, received_at, collect_interval, expected_cards, '
+            'collected_cards, sample_status, coverage_percent, payload_hash, '
+            'normalized_json'
+        )
+        card_columns = (
+            'sample_id, cluster_id, node_id, collected_epoch, card_id, '
+            'utilization, hbm_used_mb, hbm_total_mb'
+        )
+        alert_columns = (
+            'alert_id, alert_key, cluster_id, node_id, alert_type, severity, '
+            'status, started_epoch, started_at, last_seen_epoch, last_seen_at, '
+            'resolved_epoch, resolved_at, message, details_json'
+        )
+        archived_samples = 0
+        archived_alerts = 0
+        try:
+            self._initialize_archive(archive)
+            while True:
+                # Hold the hot-database lock for one bounded batch only, so a
+                # large first archive does not stop uploads and queries for the
+                # whole migration.
+                with self.lock:
+                    rows = self.connection.execute(
+                        'SELECT {} FROM samples WHERE collected_epoch < ? '
+                        'ORDER BY collected_epoch LIMIT ?'.format(sample_columns),
+                        (cutoff_epoch, batch_size),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    sample_ids = [row['sample_id'] for row in rows]
+                    placeholders = ','.join('?' for _ in sample_ids)
+                    cards = self.connection.execute(
+                        'SELECT {} FROM cards WHERE sample_id IN ({}) '
+                        'ORDER BY sample_id, card_id'.format(
+                            card_columns, placeholders
+                        ), sample_ids,
+                    ).fetchall()
+                existing = {
+                    row['sample_id']: row['payload_hash']
+                    for row in archive.execute(
+                        'SELECT sample_id, payload_hash FROM samples '
+                        'WHERE sample_id IN ({})'.format(placeholders),
+                        sample_ids,
+                    ).fetchall()
+                }
+                for row in rows:
+                    previous_hash = existing.get(row['sample_id'])
+                    if previous_hash and previous_hash != row['payload_hash']:
+                        raise RuntimeError(
+                            'archive payload conflict for {}'.format(
+                                row['sample_id']
+                            )
+                        )
+
+                archive.execute('BEGIN IMMEDIATE')
+                try:
+                    archive.executemany(
+                        'INSERT OR IGNORE INTO samples ({}) VALUES ({})'.format(
+                            sample_columns, ','.join('?' for _ in range(14))
+                        ), [tuple(row) for row in rows],
+                    )
+                    archive.executemany(
+                        'INSERT OR IGNORE INTO cards ({}) VALUES ({})'.format(
+                            card_columns, ','.join('?' for _ in range(8))
+                        ), [tuple(row) for row in cards],
+                    )
+                    archive.execute('COMMIT')
+                except Exception:
+                    archive.execute('ROLLBACK')
+                    raise
+
+                verified_samples = archive.execute(
+                    'SELECT COUNT(*) FROM samples WHERE sample_id IN ({})'.format(
+                        placeholders
+                    ), sample_ids,
+                ).fetchone()[0]
+                verified_cards = archive.execute(
+                    'SELECT COUNT(*) FROM cards WHERE sample_id IN ({})'.format(
+                        placeholders
+                    ), sample_ids,
+                ).fetchone()[0]
+                if verified_samples != len(rows) or verified_cards != len(cards):
+                    raise RuntimeError('archive verification failed')
+
+                with self.lock:
+                    self.connection.execute('BEGIN IMMEDIATE')
+                    try:
+                        cursor = self.connection.execute(
+                            'DELETE FROM samples WHERE collected_epoch < ? '
+                            'AND sample_id IN ({})'.format(placeholders),
+                            [cutoff_epoch] + sample_ids,
+                        )
+                        self.connection.execute('COMMIT')
+                    except Exception:
+                        self.connection.execute('ROLLBACK')
+                        raise
+                archived_samples += cursor.rowcount
+
+            while True:
+                with self.lock:
+                    rows = self.connection.execute(
+                        'SELECT {} FROM alerts WHERE status = \'resolved\' '
+                        'AND last_seen_epoch < ? ORDER BY last_seen_epoch '
+                        'LIMIT ?'.format(alert_columns),
+                        (cutoff_epoch, batch_size),
+                    ).fetchall()
+                    if not rows:
+                        break
+                alert_ids = [row['alert_id'] for row in rows]
+                placeholders = ','.join('?' for _ in alert_ids)
+                archive.execute('BEGIN IMMEDIATE')
+                try:
+                    archive.executemany(
+                        'INSERT OR REPLACE INTO alerts ({}) VALUES ({})'.format(
+                            alert_columns, ','.join('?' for _ in range(15))
+                        ), [tuple(row) for row in rows],
+                    )
+                    archive.execute('COMMIT')
+                except Exception:
+                    archive.execute('ROLLBACK')
+                    raise
+                archived_rows = archive.execute(
+                    'SELECT {} FROM alerts WHERE alert_id IN ({}) '
+                    'ORDER BY alert_id'.format(alert_columns, placeholders),
+                    alert_ids,
+                ).fetchall()
+                if ([tuple(row) for row in archived_rows] !=
+                        sorted((tuple(row) for row in rows), key=lambda row: row[0])):
+                    raise RuntimeError('alert archive verification failed')
+                with self.lock:
+                    self.connection.execute('BEGIN IMMEDIATE')
+                    try:
+                        cursor = self.connection.execute(
+                            'DELETE FROM alerts WHERE status = \'resolved\' '
+                            'AND last_seen_epoch < ? AND alert_id IN ({})'.format(
+                                placeholders
+                            ), [cutoff_epoch] + alert_ids,
+                        )
+                        self.connection.execute('COMMIT')
+                    except Exception:
+                        self.connection.execute('ROLLBACK')
+                        raise
+                archived_alerts += cursor.rowcount
+        finally:
+            archive.close()
+        return archived_samples, archived_alerts
 
     def health(self, check_integrity=False):
         with self.lock:

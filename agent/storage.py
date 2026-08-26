@@ -2,6 +2,7 @@ import csv
 from datetime import datetime, timedelta, timezone
 import io
 import json
+import logging
 import os
 import re
 
@@ -10,6 +11,7 @@ from cluster_common.protocol import parse_timestamp
 
 
 CSV_FIELDS = ['timestamp', 'card_id', 'utilization', 'hbm_used_mb', 'hbm_total_mb']
+LOGGER = logging.getLogger('npu_agent.storage')
 
 
 class QueueFullError(RuntimeError):
@@ -129,10 +131,22 @@ def expire_queued(spool_dir, rejected_dir, retention_days, now=None):
     return expired
 
 
-def clean_rejected(rejected_dir, retention_days, now=None):
+def _archive_file(path, archive_dir):
+    os.makedirs(archive_dir, exist_ok=True)
+    target = os.path.join(archive_dir, os.path.basename(path))
+    if os.path.exists(target):
+        # Never overwrite an archive. Keeping the source as well is safer than
+        # silently replacing potentially different historical data.
+        LOGGER.error('archive target already exists; keeping source %s', path)
+        return False
+    os.replace(path, target)
+    return True
+
+
+def archive_rejected(rejected_dir, archive_root, retention_days, now=None):
     now = now or datetime.now(timezone.utc)
     cutoff = now.timestamp() - retention_days * 86400
-    deleted = 0
+    archived = 0
     try:
         names = os.listdir(rejected_dir)
     except OSError:
@@ -141,17 +155,17 @@ def clean_rejected(rejected_dir, retention_days, now=None):
         path = os.path.join(rejected_dir, name)
         try:
             if os.path.getmtime(path) < cutoff:
-                os.remove(path)
-                deleted += 1
-        except OSError:
-            pass
-    return deleted
+                if _archive_file(path, os.path.join(archive_root, 'rejected')):
+                    archived += 1
+        except OSError as exc:
+            LOGGER.error('cannot archive rejected sample %s: %s', path, exc)
+    return archived
 
 
-def clean_old_local_data(directories, retention_days, now=None):
+def archive_old_local_data(directories, archive_root, retention_days, now=None):
     now = now or datetime.now(timezone.utc)
     cutoff = now.date() - timedelta(days=retention_days)
-    deleted = 0
+    archived = 0
     pattern = re.compile(r'^(?:stats|samples)_(\d{4}-\d{2}-\d{2})\.(?:csv|jsonl)$')
     for directory in directories:
         try:
@@ -168,8 +182,10 @@ def clean_old_local_data(directories, retention_days, now=None):
                 continue
             if file_day < cutoff:
                 try:
-                    os.remove(os.path.join(directory, name))
-                    deleted += 1
-                except OSError:
-                    pass
-    return deleted
+                    if _archive_file(
+                            os.path.join(directory, name),
+                            os.path.join(archive_root, os.path.basename(directory))):
+                        archived += 1
+                except OSError as exc:
+                    LOGGER.error('cannot archive local data %s: %s', name, exc)
+    return archived

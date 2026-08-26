@@ -29,6 +29,9 @@ STATUS_DIR = os.path.join(DATA_DIR, 'sample_status')
 MONTHLY_DIR = os.path.join(DATA_DIR, 'monthly')
 SPOOL_DIR = os.path.join(DATA_DIR, 'spool')
 REJECTED_DIR = os.path.join(DATA_DIR, 'rejected')
+ARCHIVE_DIR = os.path.abspath(os.environ.get(
+    'NPU_AGENT_ARCHIVE_DIR', os.path.join(DATA_DIR, 'archive')
+))
 HEALTH_FILE = os.path.join(DATA_DIR, 'health.json')
 UPLOAD_HEALTH_FILE = os.path.join(DATA_DIR, 'upload_health.json')
 
@@ -59,5 +62,6 @@ def validate():
     if not COLLECTOR_URL.startswith(('http://', 'https://')):
         raise ValueError('NPU_AGENT_COLLECTOR_URL must be an http(s) URL')
     for directory in (
-            DATA_DIR, DAILY_DIR, STATUS_DIR, MONTHLY_DIR, SPOOL_DIR, REJECTED_DIR):
+            DATA_DIR, DAILY_DIR, STATUS_DIR, MONTHLY_DIR, SPOOL_DIR,
+            REJECTED_DIR, ARCHIVE_DIR):
         os.makedirs(directory, exist_ok=True)

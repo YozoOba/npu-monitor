@@ -87,9 +87,14 @@ class CollectorApplication:
                     cutoff = datetime.now(timezone.utc) - timedelta(
                         days=config.RETENTION_DAYS
                     )
-                    deleted = self.storage.delete_before(int(cutoff.timestamp()))
-                    if deleted:
-                        LOGGER.info('deleted %s expired samples', deleted)
+                    archived_samples, archived_alerts = self.storage.archive_before(
+                        int(cutoff.timestamp()), config.ARCHIVE_DATABASE_PATH
+                    )
+                    if archived_samples or archived_alerts:
+                        LOGGER.info(
+                            'archived %s samples and %s resolved alerts',
+                            archived_samples, archived_alerts,
+                        )
                     last_cleanup_day = today
             except Exception:
                 LOGGER.exception('collector maintenance failed')

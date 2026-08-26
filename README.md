@@ -24,7 +24,7 @@
 ✅ **零依赖**：仅使用Python标准库，断网环境直接运行
 ✅ **纯文件存储**：CSV格式，易于查看、备份、迁移
 ✅ **资源占用低**：每分钟采集一次，不影响业务
-✅ **自动清理**：180天后自动删除旧数据文件
+✅ **冷热归档**：180天后移入归档目录，不直接删除历史数据
 
 ---
 
@@ -44,7 +44,8 @@ npu-smi info
 | 环境变量 | 默认值 | 说明 |
 |------|------:|------|
 | `NPU_MONITOR_COLLECT_INTERVAL` | 60 | 采集间隔（秒） |
-| `NPU_MONITOR_RETENTION_DAYS` | 180 | CSV 保留天数 |
+| `NPU_MONITOR_RETENTION_DAYS` | 180 | 热目录保留天数，超期文件转入归档 |
+| `NPU_MONITOR_ARCHIVE_DIR` | `data/archive` | 超过热数据期限后的永久归档目录 |
 | `NPU_MONITOR_EXPECTED_NPU_COUNT` | 8 | 预期卡数；数量不符时保留已采卡并标记覆盖率 |
 | `NPU_MONITOR_COMMAND_TIMEOUT` | 10 | `npu-smi` 超时（秒） |
 | `NPU_MONITOR_LOG_MAX_BYTES` | 10485760 | 单个日志文件最大字节数 |
@@ -354,11 +355,14 @@ tar -czf npu-data-2026-08.tar.gz data/daily/stats_2026-08-*.csv
 scp -r data/daily/ user@another-device:/path/to/npu-monitor/data/
 ```
 
-### 清理旧数据
-程序自动清理超过180天的文件，也可手动删除：
+### 归档旧数据
+程序自动把超过 180 天的文件移到 `data/archive/`，不会直接删除。归档数据默认无限期保留；如需释放空间，请先完成离线备份，再由管理员人工处理：
 ```bash
-# 删除指定日期之前的数据
-rm data/daily/stats_2026-01-*.csv
+# 查看已归档数据
+find data/archive -type f -print
+
+# 将归档复制到其他存储（示例）
+tar -czf npu-data-archive-backup.tar.gz data/archive/
 ```
 
 ---
@@ -371,7 +375,7 @@ rm data/daily/stats_2026-01-*.csv
 | CPU | < 2% （仅执行npu-smi查询） |
 | 内存 | < 20MB |
 | 磁盘写入 | 230KB/天（4张卡） |
-| 磁盘总占用 | 40MB（180天，4张卡） |
+| 热目录磁盘占用 | 约40MB（180天，4张卡）；归档目录会持续增长 |
 
 ### 对业务的影响
 - ✅ **极低影响**：每分钟一次只读查询
@@ -428,10 +432,10 @@ tail -50 data/logs/npu_monitor.log
 ## 常见问题
 
 **Q：数据文件会无限增长吗？**
-A：不会。自动清理180天前的文件。
+A：热目录不会无限增长；180 天前的数据会转入 `data/archive/`。归档不会自动删除，因此需要监控归档盘容量并定期备份。
 
 **Q：可以修改保留天数吗？**
-A：可以，设置 `NPU_MONITOR_RETENTION_DAYS` 环境变量。
+A：可以，设置 `NPU_MONITOR_RETENTION_DAYS` 环境变量；它控制热数据窗口，不控制历史数据寿命。
 
 **Q：CSV文件可以直接用Excel打开吗？**
 A：可以，CSV是标准格式。

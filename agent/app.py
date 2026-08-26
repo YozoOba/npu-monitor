@@ -18,11 +18,11 @@ from . import config
 from .sampler import collect
 from .sender import UploadWorker
 from .monthly_xlsx import (
-    MonthlyWorkbookError, clean_old_monthly_workbooks,
+    MonthlyWorkbookError, archive_old_monthly_workbooks,
     update_monthly_workbooks,
 )
 from .storage import (
-    clean_old_local_data, clean_rejected, enqueue, expire_queued, queue_usage,
+    archive_old_local_data, archive_rejected, enqueue, expire_queued, queue_usage,
     save_local_sample,
 )
 
@@ -122,21 +122,30 @@ def run(once=False):
                             LOGGER.info('updated monthly workbook %s', workbook_path)
                     except (OSError, MonthlyWorkbookError, zipfile.BadZipFile):
                         LOGGER.exception('cannot update monthly XLSX workbooks')
-                clean_old_local_data(
-                    (config.DAILY_DIR, config.STATUS_DIR), config.RETENTION_DAYS,
+                archived_local = archive_old_local_data(
+                    (config.DAILY_DIR, config.STATUS_DIR), config.ARCHIVE_DIR,
+                    config.RETENTION_DAYS,
                     now=collected_at,
                 )
-                clean_old_monthly_workbooks(
-                    config.MONTHLY_DIR, config.RETENTION_DAYS,
+                archived_workbooks = archive_old_monthly_workbooks(
+                    config.MONTHLY_DIR, config.ARCHIVE_DIR,
+                    config.RETENTION_DAYS,
                     collected_at.date(),
                 )
                 expired = expire_queued(
                     config.SPOOL_DIR, config.REJECTED_DIR,
                     config.SPOOL_RETENTION_DAYS, now=collected_at,
                 )
-                clean_rejected(
-                    config.REJECTED_DIR, config.RETENTION_DAYS, now=collected_at
+                archived_rejected = archive_rejected(
+                    config.REJECTED_DIR, config.ARCHIVE_DIR,
+                    config.RETENTION_DAYS, now=collected_at
                 )
+                if archived_local or archived_workbooks or archived_rejected:
+                    LOGGER.info(
+                        'archived %s local files, %s monthly workbooks and '
+                        '%s rejected files',
+                        archived_local, archived_workbooks, archived_rejected,
+                    )
                 if expired:
                     LOGGER.error('%s queued samples expired before upload', expired)
                 last_cleanup_day = collected_at.date()

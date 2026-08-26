@@ -10,7 +10,7 @@ import zipfile
 
 from agent.monthly_xlsx import (
     CSV_FIELDS, MonthlyWorkbookError, build_monthly_workbook,
-    clean_old_monthly_workbooks,
+    archive_old_monthly_workbooks,
     update_monthly_workbooks,
 )
 
@@ -140,18 +140,23 @@ class MonthlyWorkbookTests(unittest.TestCase):
         with open(output_path, 'rb') as handle:
             self.assertEqual(handle.read(), original)
 
-    def test_monthly_workbooks_follow_agent_retention(self):
+    def test_monthly_workbooks_are_archived_after_hot_retention(self):
         os.makedirs(self.monthly_dir)
+        archive_dir = os.path.join(self.temporary.name, 'archive')
         old_path = os.path.join(self.monthly_dir, 'stats_2025-12.xlsx')
         current_path = os.path.join(self.monthly_dir, 'stats_2026-08.xlsx')
         for path in (old_path, current_path):
             with open(path, 'wb') as handle:
                 handle.write(b'test')
-        deleted = clean_old_monthly_workbooks(
-            self.monthly_dir, retention_days=180, now_date=date(2026, 8, 19)
+        archived = archive_old_monthly_workbooks(
+            self.monthly_dir, archive_dir,
+            retention_days=180, now_date=date(2026, 8, 19)
         )
-        self.assertEqual(deleted, 1)
+        self.assertEqual(archived, 1)
         self.assertFalse(os.path.exists(old_path))
+        self.assertTrue(os.path.exists(os.path.join(
+            archive_dir, 'monthly', 'stats_2025-12.xlsx'
+        )))
         self.assertTrue(os.path.exists(current_path))
 
 

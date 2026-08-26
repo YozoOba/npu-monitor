@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 from agent.sampler import parse_npu_smi_output
 from config import (
+    ARCHIVE_DIR,
     COLLECT_INTERVAL,
     DAILY_DIR,
     DATA_RETENTION_DAYS,
@@ -282,19 +283,19 @@ def save_to_csv(cards, collected_at, daily_dir=DAILY_DIR):
         return False
 
 
-def clean_old_data(today=None, daily_dir=DAILY_DIR, retention_days=DATA_RETENTION_DAYS):
+def _archive_old_files(source_dir, archive_dir, pattern, today, retention_days):
     today = today or datetime.now(CST).date()
     cutoff_date = today - timedelta(days=retention_days)
-    deleted_count = 0
+    archived_count = 0
 
     try:
-        filenames = os.listdir(daily_dir)
+        filenames = os.listdir(source_dir)
     except OSError as exc:
-        LOGGER.error('Unable to list data directory %s: %s', daily_dir, exc)
+        LOGGER.error('Unable to list data directory %s: %s', source_dir, exc)
         return 0
 
     for filename in filenames:
-        match = re.fullmatch(r'stats_(\d{4}-\d{2}-\d{2})\.csv', filename)
+        match = re.fullmatch(pattern, filename)
         if not match:
             continue
         try:
@@ -304,41 +305,40 @@ def clean_old_data(today=None, daily_dir=DAILY_DIR, retention_days=DATA_RETENTIO
         if file_date >= cutoff_date:
             continue
         try:
-            os.remove(os.path.join(daily_dir, filename))
-            deleted_count += 1
+            os.makedirs(archive_dir, exist_ok=True)
+            source = os.path.join(source_dir, filename)
+            target = os.path.join(archive_dir, filename)
+            if os.path.exists(target):
+                LOGGER.error('Archive target already exists; keeping source: %s', target)
+                continue
+            os.replace(source, target)
+            archived_count += 1
         except OSError as exc:
-            LOGGER.error('Unable to delete old data file %s: %s', filename, exc)
+            LOGGER.error('Unable to archive old data file %s: %s', filename, exc)
 
-    if deleted_count:
-        LOGGER.info('Deleted %s data files older than %s', deleted_count, cutoff_date)
-    return deleted_count
+    if archived_count:
+        LOGGER.info('Archived %s data files older than %s', archived_count, cutoff_date)
+    return archived_count
+
+
+def clean_old_data(today=None, daily_dir=DAILY_DIR, retention_days=DATA_RETENTION_DAYS,
+                   archive_dir=None):
+    """Archive files outside the hot window; retained name for compatibility."""
+    archive_dir = archive_dir or os.path.join(ARCHIVE_DIR, 'daily')
+    return _archive_old_files(
+        daily_dir, archive_dir, r'stats_(\d{4}-\d{2}-\d{2})\.csv',
+        today, retention_days,
+    )
 
 
 def clean_old_sample_status(today=None, status_dir=SAMPLE_STATUS_DIR,
-                            retention_days=DATA_RETENTION_DAYS):
-    today = today or datetime.now(CST).date()
-    cutoff_date = today - timedelta(days=retention_days)
-    deleted_count = 0
-    try:
-        filenames = os.listdir(status_dir)
-    except OSError as exc:
-        LOGGER.error('Unable to list sample status directory %s: %s', status_dir, exc)
-        return 0
-    for filename in filenames:
-        match = re.fullmatch(r'samples_(\d{4}-\d{2}-\d{2})\.jsonl', filename)
-        if not match:
-            continue
-        try:
-            file_date = datetime.strptime(match.group(1), '%Y-%m-%d').date()
-        except ValueError:
-            continue
-        if file_date < cutoff_date:
-            try:
-                os.remove(os.path.join(status_dir, filename))
-                deleted_count += 1
-            except OSError as exc:
-                LOGGER.error('Unable to delete sample status %s: %s', filename, exc)
-    return deleted_count
+                            retention_days=DATA_RETENTION_DAYS, archive_dir=None):
+    """Archive status files outside the hot window; retained name for compatibility."""
+    archive_dir = archive_dir or os.path.join(ARCHIVE_DIR, 'sample_status')
+    return _archive_old_files(
+        status_dir, archive_dir, r'samples_(\d{4}-\d{2}-\d{2})\.jsonl',
+        today, retention_days,
+    )
 
 
 def seconds_to_next_interval(now=None):

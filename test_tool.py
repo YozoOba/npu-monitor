@@ -76,19 +76,24 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertNotIn(None, rows[0])
 
-    def test_clean_old_data(self):
+    def test_clean_old_data_archives_instead_of_deleting(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
+            archive_directory = os.path.join(temporary_directory, 'archive')
             old_file = os.path.join(temporary_directory, 'stats_2026-01-01.csv')
             kept_file = os.path.join(temporary_directory, 'stats_2026-08-11.csv')
             open(old_file, 'w').close()
             open(kept_file, 'w').close()
-            deleted = npu_monitor.clean_old_data(
+            archived = npu_monitor.clean_old_data(
                 today=date(2026, 8, 12),
                 daily_dir=temporary_directory,
                 retention_days=30,
+                archive_dir=archive_directory,
             )
-            self.assertEqual(deleted, 1)
+            self.assertEqual(archived, 1)
             self.assertFalse(os.path.exists(old_file))
+            self.assertTrue(os.path.exists(os.path.join(
+                archive_directory, 'stats_2026-01-01.csv'
+            )))
             self.assertTrue(os.path.exists(kept_file))
 
     def test_partial_sample_status_records_coverage(self):
