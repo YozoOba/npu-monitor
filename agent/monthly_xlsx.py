@@ -8,10 +8,13 @@ import tempfile
 import zipfile
 from xml.sax.saxutils import escape, quoteattr
 
+from cluster_common.protocol import parse_timestamp
+from cluster_common.timezones import CHINA_STANDARD_TIME
+
 
 CSV_FIELDS = ['timestamp', 'card_id', 'utilization', 'hbm_used_mb', 'hbm_total_mb']
 DAILY_FILE_PATTERN = re.compile(r'^stats_(\d{4}-\d{2}-\d{2})\.csv$')
-MONTHLY_FILE_PATTERN = re.compile(r'^stats_(\d{4}-\d{2})\.xlsx$')
+MONTHLY_FILE_PATTERN = re.compile(r'^.+_(\d{4}-\d{2})\.xlsx$')
 LOGGER = logging.getLogger('npu_agent.monthly_xlsx')
 
 
@@ -47,7 +50,11 @@ def _read_day_rows(path):
             )
         for line_number, row in enumerate(reader, start=2):
             try:
-                timestamp = row['timestamp'].strip()
+                source_timestamp = row['timestamp'].strip()
+                local_collected = parse_timestamp(source_timestamp).astimezone(
+                    CHINA_STANDARD_TIME
+                )
+                timestamp = local_collected.isoformat(timespec='seconds')
                 card_id = int(row['card_id'])
                 utilization = float(row['utilization'])
                 hbm_used = row['hbm_used_mb'].strip()
@@ -58,7 +65,7 @@ def _read_day_rows(path):
                 raise MonthlyWorkbookError(
                     '{} line {} is invalid: {}'.format(path, line_number, exc)
                 )
-            if not timestamp:
+            if not source_timestamp:
                 raise MonthlyWorkbookError(
                     '{} line {} has an empty timestamp'.format(path, line_number)
                 )
@@ -84,39 +91,41 @@ def _read_day_rows(path):
                         path, line_number
                     )
                 )
-            identity = (timestamp, card_id)
+            identity = (int(local_collected.timestamp()), card_id)
             if identity in seen:
                 continue
             seen.add(identity)
             yield (
-                timestamp, card_id, utilization, hbm_used_value, hbm_total_value
+                local_collected.date(), timestamp, card_id, utilization,
+                hbm_used_value, hbm_total_value
             )
 
 
 def _discover_daily_files(daily_dir, through_date):
-    months = {}
+    paths_by_date = {}
     try:
         names = os.listdir(daily_dir)
     except OSError:
-        return months
+        return {}
     for name in names:
         match = DAILY_FILE_PATTERN.fullmatch(name)
         if not match:
             continue
-        try:
-            file_date = datetime.strptime(match.group(1), '%Y-%m-%d').date()
-        except ValueError:
-            continue
-        if file_date > through_date:
-            continue
+        path = os.path.join(daily_dir, name)
+        for file_date, _timestamp, _card_id, _utilization, _used, _total in (
+                _read_day_rows(path)):
+            if file_date <= through_date:
+                paths_by_date.setdefault(file_date, set()).add(path)
+    months = {}
+    for file_date, paths in paths_by_date.items():
         month = file_date.strftime('%Y-%m')
-        months.setdefault(month, []).append((file_date, os.path.join(daily_dir, name)))
-    for values in months.values():
-        values.sort(key=lambda value: value[0])
+        months.setdefault(month, []).append((file_date, sorted(paths)))
+    for month_values in months.values():
+        month_values.sort(key=lambda value: value[0])
     return months
 
 
-def _write_sheet(archive, sheet_index, csv_path):
+def _write_sheet(archive, sheet_index, sheet_date, csv_paths, node_info):
     with archive.open('xl/worksheets/sheet{}.xml'.format(sheet_index), 'w') as output:
         def write(value):
             output.write(value.encode('utf-8'))
@@ -124,22 +133,48 @@ def _write_sheet(archive, sheet_index, csv_path):
         write('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>')
         write('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">')
         write('<sheetViews><sheetView workbookViewId="0">')
-        write('<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>')
+        write('<pane ySplit="7" topLeftCell="A8" activePane="bottomLeft" state="frozen"/>')
         write('</sheetView></sheetViews>')
         write('<cols>')
         write('<col min="1" max="1" width="28" customWidth="1"/>')
         write('<col min="2" max="2" width="10" customWidth="1"/>')
         write('<col min="3" max="5" width="18" customWidth="1"/>')
         write('</cols><sheetData>')
-        write('<row r="1" ht="22" customHeight="1">')
-        for column, heading in zip('ABCDE', CSV_FIELDS):
-            write(_inline_cell('{}1'.format(column), heading, style=1))
+        metadata = (
+            ('node_name', node_info['node_name']),
+            ('node_id', node_info['node_id']),
+            ('cluster_id', node_info['cluster_id']),
+            ('date', sheet_date.isoformat()),
+            ('timezone', 'UTC+08:00'),
+        )
+        for row_index, (label, value) in enumerate(metadata, start=1):
+            write('<row r="{}">'.format(row_index))
+            write(_inline_cell('A{}'.format(row_index), label, style=1))
+            write(_inline_cell('B{}'.format(row_index), value))
+            write('</row>')
+        write('<row r="7" ht="22" customHeight="1">')
+        headings = (
+            'timestamp_utc+08:00', 'card_id', 'utilization',
+            'hbm_used_mb', 'hbm_total_mb',
+        )
+        for column, heading in zip('ABCDE', headings):
+            write(_inline_cell('{}7'.format(column), heading, style=1))
         write('</row>')
 
-        row_number = 1
-        rows = () if csv_path is None else _read_day_rows(csv_path)
-        for row_number, values in enumerate(rows, start=2):
-            timestamp, card_id, utilization, hbm_used, hbm_total = values
+        row_number = 7
+        seen = set()
+        rows = (
+            values for csv_path in (csv_paths or ())
+            for values in _read_day_rows(csv_path)
+            if values[0] == sheet_date
+        )
+        for values in rows:
+            _local_date, timestamp, card_id, utilization, hbm_used, hbm_total = values
+            identity = (timestamp, card_id)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            row_number += 1
             write('<row r="{}">'.format(row_number))
             write(_inline_cell('A{}'.format(row_number), timestamp))
             write(_number_cell('B{}'.format(row_number), card_id, style=2))
@@ -149,9 +184,8 @@ def _write_sheet(archive, sheet_index, csv_path):
             if hbm_total is not None:
                 write(_number_cell('E{}'.format(row_number), hbm_total, style=3))
             write('</row>')
-        last_row = max(1, row_number)
         write('</sheetData>')
-        write('<autoFilter ref="A1:E{}"/>'.format(last_row))
+        write('<autoFilter ref="A7:E{}"/>'.format(row_number))
         write('</worksheet>')
 
 
@@ -271,9 +305,16 @@ CORE_XML = (
 )
 
 
-def build_monthly_workbook(day_files, output_path):
+def build_monthly_workbook(day_files, output_path, node_info=None):
     if not day_files:
         return None
+    day_files = [
+        (file_date, [paths] if isinstance(paths, str) else paths)
+        for file_date, paths in day_files
+    ]
+    node_info = node_info or {
+        'node_id': 'unknown', 'node_name': 'unknown', 'cluster_id': 'default'
+    }
     output_dir = os.path.dirname(output_path)
     os.makedirs(output_dir, exist_ok=True)
     descriptor, temporary_path = tempfile.mkstemp(
@@ -294,8 +335,10 @@ def build_monthly_workbook(day_files, output_path):
                 _workbook_relationships(len(day_files)),
             )
             archive.writestr('xl/styles.xml', STYLES_XML)
-            for sheet_index, (file_date, csv_path) in enumerate(day_files, start=1):
-                _write_sheet(archive, sheet_index, csv_path)
+            for sheet_index, (file_date, csv_paths) in enumerate(day_files, start=1):
+                _write_sheet(
+                    archive, sheet_index, file_date, csv_paths, node_info
+                )
         with open(temporary_path, 'rb+') as handle:
             os.fsync(handle.fileno())
         os.replace(temporary_path, output_path)
@@ -307,12 +350,28 @@ def build_monthly_workbook(day_files, output_path):
             pass
 
 
-def update_monthly_workbooks(daily_dir, monthly_dir, through_date):
+def _safe_filename(value):
+    safe = ''.join(
+        character if character.isalnum() or character in ('-', '_', '.') else '_'
+        for character in str(value).strip()
+    ).strip('._')
+    safe = re.sub(r'_+', '_', safe)
+    return (safe or 'npu-node')[:100]
+
+
+def update_monthly_workbooks(
+        daily_dir, monthly_dir, through_date, node_info=None):
+    node_info = node_info or {
+        'node_id': 'unknown', 'node_name': 'unknown', 'cluster_id': 'default'
+    }
     months = _discover_daily_files(daily_dir, through_date)
     updated = []
     active_month = through_date.strftime('%Y-%m')
     for month in sorted(months):
-        output_path = os.path.join(monthly_dir, 'stats_{}.xlsx'.format(month))
+        output_path = os.path.join(
+            monthly_dir,
+            '{}_{}.xlsx'.format(_safe_filename(node_info['node_name']), month),
+        )
         if month != active_month and os.path.exists(output_path):
             continue
         paths_by_date = dict(months[month])
@@ -333,7 +392,7 @@ def update_monthly_workbooks(daily_dir, monthly_dir, through_date):
         while current_date <= last_date:
             day_files.append((current_date, paths_by_date.get(current_date)))
             current_date += timedelta(days=1)
-        result = build_monthly_workbook(day_files, output_path)
+        result = build_monthly_workbook(day_files, output_path, node_info)
         if result:
             updated.append(result)
     return updated

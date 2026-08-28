@@ -8,6 +8,7 @@ import sys
 from . import config
 from .client import CollectorClient
 from .export import create_export, resolve_range
+from .utilization_report import build_utilization_report, resolve_report_range
 
 
 def format_number(value):
@@ -120,6 +121,14 @@ def main(argv=None):
     export.add_argument('--card', type=int)
     export.add_argument('--status', choices=['complete', 'partial', 'failed'])
 
+    report = subparsers.add_parser('utilization-report')
+    report.add_argument('--period', choices=['month', 'day', 'custom'], default='month')
+    report.add_argument('--start')
+    report.add_argument('--end')
+    report.add_argument('--node')
+    report.add_argument('--cluster')
+    report.add_argument('--output', required=True)
+
     node_update = subparsers.add_parser('node-update')
     node_update.add_argument('--node', required=True)
     node_update.add_argument('--name')
@@ -185,6 +194,25 @@ def main(argv=None):
                 args.cluster, args.card, args.status,
             )
             print('exported {} rows to {}'.format(count, output))
+        elif command == 'utilization-report':
+            report_range = resolve_report_range(
+                args.period, args.start, args.end,
+                max_days=config.MAX_REPORT_DAYS,
+            )
+            aggregate = client.utilization_report(
+                report_range['utc_start'], report_range['utc_end'],
+                args.node, args.cluster, timeout=config.REPORT_TIMEOUT,
+            )
+            output = os.path.abspath(args.output)
+            output_dir = os.path.dirname(output)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+            result = build_utilization_report(
+                output, report_range, aggregate
+            )
+            print('generated utilization report: {}'.format(
+                json.dumps(result, ensure_ascii=False, sort_keys=True)
+            ))
         elif command in ('node-update', 'node-delete', 'data-delete'):
             if command == 'node-update':
                 request = {

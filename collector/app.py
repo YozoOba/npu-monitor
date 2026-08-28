@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from cluster_common.atomic import write_json_atomic
 from cluster_common.protocol import ProtocolError, normalize_sample, parse_timestamp
 from cluster_common.storage_health import check_capacity
+from cluster_common.timezones import CHINA_UTC_OFFSET_SECONDS
 from . import __version__
 from . import config
 from .management import ConfirmationMismatchError, ManagementService
@@ -334,6 +335,24 @@ def make_handler(application):
                         'end': end.isoformat(timespec='seconds'),
                     })
                     self.send_json(200, result)
+                except (ValueError, ProtocolError) as exc:
+                    self.send_json(400, {'error': str(exc)})
+                return
+            if parsed.path == '/internal/v1/utilization-report':
+                try:
+                    query = parse_qs(parsed.query)
+                    start, end = query_time_range(query)
+                    self.send_json(200, {
+                        'start': start.isoformat(timespec='seconds'),
+                        'end': end.isoformat(timespec='seconds'),
+                        'timezone': 'UTC+08:00',
+                        'nodes': application.storage.utilization_report(
+                            int(start.timestamp()), int(end.timestamp()),
+                            CHINA_UTC_OFFSET_SECONDS,
+                            query.get('node_id', [None])[0],
+                            query.get('cluster_id', [None])[0],
+                        ),
+                    })
                 except (ValueError, ProtocolError) as exc:
                     self.send_json(400, {'error': str(exc)})
                 return

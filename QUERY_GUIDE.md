@@ -42,6 +42,7 @@ http://主节点IP:18081/
 | 告警记录 | 告警类型、级别、状态、开始/恢复时间和信息 | 时间、集群、节点、级别、状态、类型、分页 |
 | 原始采样 | 采样状态、卡覆盖、缺失卡、接收时间 | 时间、集群、节点、状态、节点名称/ID 搜索、分页 |
 | 数据导出 | 逐卡 CSV 或 XLSX | 时间、集群、节点、卡号、采样状态 |
+| 汇聚热力图报表 | 按节点的区间/每日/每小时平均利用率 XLSX | 东八区当天、本月或顶部自定义时间，集群、节点 |
 | 管理审计 | 最近执行的节点/数据管理操作 | 当前页面显示最近 10 条 |
 
 节点状态含义：
@@ -188,7 +189,45 @@ expected_cards,collected_cards,coverage_percent,card_id,utilization,
 hbm_used_mb,hbm_total_mb
 ```
 
-### 3.8 管理操作记录
+### 3.8 节点平均利用率与热力图报表
+
+生成东八区本月报表：
+
+```bash
+python3 -m console.cli \
+  --collector-url http://主节点IP:18080 utilization-report \
+  --period month \
+  --output /work/monitor/runtime-data/npu-utilization-month.xlsx
+```
+
+查询类型：
+
+| `--period` | 东八区查询范围 |
+|---|---|
+| `day` | 当天 00:00 到当前时间 |
+| `month` | 本月 1 日 00:00 到当前时间 |
+| `custom` | `--start` 到 `--end`；无时区的值按 `UTC+08:00` 解释 |
+
+自定义报表：
+
+```bash
+python3 -m console.cli \
+  --collector-url http://主节点IP:18080 utilization-report \
+  --period custom --start 2026-08-01 --end 2026-08-07 \
+  --cluster training-a --node npu-node-01 \
+  --output /work/monitor/runtime-data/npu-utilization-custom.xlsx
+```
+
+日期形式的 `--end` 包含当天；精确时间的结束值不包含。默认自定义范围最多 180 天。
+
+工作簿结构：
+
+- 第一个 `汇总` Sheet：每行一个节点，包含区间平均利用率、逐卡数据点数，并以每天平均利用率作为热力图单元；
+- 后续每天一个 `YYYY-MM-DD` Sheet：每行一个节点，包含当天平均利用率，并以 0～23 时每小时平均利用率作为热力图单元；
+- 节点平均值直接对该节点范围内全部逐卡数据点求算术平均，不计算“每张卡平均值的平均值”；
+- 空白单元表示对应日期或小时没有逐卡数据。
+
+### 3.9 管理操作记录
 
 ```bash
 python3 -m console.cli \
@@ -214,6 +253,7 @@ python3 -m console.cli \
 | GET | `/api/samples` | 原始采样查询和分页 |
 | GET | `/api/alerts` | 告警查询和分页 |
 | GET | `/api/export` | 下载 CSV/XLSX |
+| GET | `/api/utilization-report` | 下载节点平均利用率与日/月热力图 XLSX |
 | GET | `/api/admin/operations` | 管理操作审计记录 |
 | POST | `/api/admin/preview` | 预览节点或数据管理操作，非普通只读查询 |
 | POST | `/api/admin/execute` | 执行已确认的管理操作，属于数据修改接口 |
@@ -241,6 +281,7 @@ python3 -m console.cli \
 | `/api/samples` | `start`、`end`、`hours`、`cluster_id`、`node_id`、`status`、`q`、`page`、`page_size` |
 | `/api/alerts` | `start`、`end`、`hours`、`cluster_id`、`node_id`、`severity`、`status`、`type`、`page`、`page_size` |
 | `/api/export` | `start`、`end`、`hours`、`cluster_id`、`node_id`、`card_id`、`status`、`format` |
+| `/api/utilization-report` | `period=day\|month\|custom`、`start`、`end`、`cluster_id`、`node_id` |
 | `/api/admin/operations` | `page`、`page_size` |
 
 其中 `cluster_id`、`node_id`、告警 `type` 和各种状态参数均为精确匹配；`q` 是节点 ID/名称的包含搜索。
@@ -294,6 +335,25 @@ curl -fS --get http://主节点IP:18081/api/export \
   -o npu-2026-08-01_to_07.xlsx
 ```
 
+下载本月节点汇聚与热力图报表：
+
+```bash
+curl -fS --get http://主节点IP:18081/api/utilization-report \
+  --data-urlencode 'period=month' \
+  --data-urlencode 'cluster_id=training-a' \
+  -o npu-utilization-month.xlsx
+```
+
+下载自定义东八区范围报表：
+
+```bash
+curl -fS --get http://主节点IP:18081/api/utilization-report \
+  --data-urlencode 'period=custom' \
+  --data-urlencode 'start=2026-08-01' \
+  --data-urlencode 'end=2026-08-07' \
+  -o npu-utilization-custom.xlsx
+```
+
 ## 5. Collector 内部查询接口
 
 Console 会把查询转发到 Collector。内部接口与 Console 接口的对应关系如下：
@@ -305,6 +365,7 @@ Console 会把查询转发到 Collector。内部接口与 Console 接口的对�
 | `/api/nodes` | `/internal/v1/nodes` |
 | `/api/history` | `/internal/v1/series` |
 | `/api/samples` | `/internal/v1/samples` |
+| `/api/utilization-report` | `/internal/v1/utilization-report`（聚合 JSON，由 Console 生成 XLSX） |
 | `/api/alerts` | `/internal/v1/alerts` |
 | `/api/admin/operations` | `/internal/v1/admin/operations` |
 | `POST /api/admin/preview` | `POST /internal/v1/admin/preview` |
@@ -339,6 +400,14 @@ Collector 的 `/health` 可直接检查数据库完整性和磁盘容量。`POST
 - 数据管理功能可以在明确预览、确认并备份后选择处理归档数据，这不属于普通查询行为。
 
 因此，查询超过热数据窗口的长期历史时，应直接保留日常导出的 CSV/XLSX，或后续增加专门的归档查询能力。
+
+### 6.4 东八区报表口径
+
+- Agent 与 Collector 的协议时间和 SQLite epoch 保持 UTC，以保证跨节点去重和断线补传稳定；
+- Agent 本地 CSV、状态文件和月度工作簿按固定 `UTC+08:00` 日期保存；
+- 汇聚热力图报表的当天、本月、日期、小时分组全部使用固定 `UTC+08:00`，不依赖服务器系统时区；
+- `period=day` 和 `period=month` 使用主节点当前真实时间换算东八区边界；
+- 自定义时间未携带时区时按东八区解释，携带 `Z` 或偏移量时先换算为东八区。
 
 ## 7. 常见问题
 

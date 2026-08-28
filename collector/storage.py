@@ -610,6 +610,79 @@ class CollectorStorage:
             'items': items,
         }
 
+    def utilization_report(
+            self, start_epoch, end_epoch, utc_offset_seconds=28800,
+            node_id=None, cluster_id=None):
+        filters = ['c.collected_epoch >= ?', 'c.collected_epoch < ?']
+        parameters = [
+            utc_offset_seconds, utc_offset_seconds, start_epoch, end_epoch,
+        ]
+        if node_id:
+            filters.append('c.node_id = ?')
+            parameters.append(node_id)
+        if cluster_id:
+            filters.append('n.cluster_id = ?')
+            parameters.append(cluster_id)
+        report_connection = sqlite3.connect(self.path, timeout=30)
+        report_connection.row_factory = sqlite3.Row
+        report_connection.execute('PRAGMA query_only=ON')
+        try:
+            rows = report_connection.execute('''
+                SELECT COALESCE(n.cluster_id, c.cluster_id) AS cluster_id,
+                       c.node_id,
+                       COALESCE(n.node_name, c.node_id) AS node_name,
+                       date(c.collected_epoch + ?, 'unixepoch') AS local_day,
+                       strftime('%H', c.collected_epoch + ?, 'unixepoch') AS local_hour,
+                       COUNT(*) AS card_samples,
+                       AVG(c.utilization) AS utilization_avg
+                FROM cards c
+                LEFT JOIN nodes n ON n.node_id = c.node_id
+                WHERE {}
+                GROUP BY COALESCE(n.cluster_id, c.cluster_id), c.node_id,
+                         node_name, local_day, local_hour
+                ORDER BY cluster_id, c.node_id, local_day, local_hour
+            '''.format(' AND '.join(filters)), parameters).fetchall()
+        finally:
+            report_connection.close()
+
+        nodes = {}
+        for row in rows:
+            key = (row['cluster_id'], row['node_id'])
+            node = nodes.setdefault(key, {
+                'cluster_id': row['cluster_id'],
+                'node_id': row['node_id'],
+                'node_name': row['node_name'],
+                '_sum': 0.0,
+                'card_samples': 0,
+                'days': {},
+            })
+            count = row['card_samples']
+            average = float(row['utilization_avg'])
+            node['_sum'] += average * count
+            node['card_samples'] += count
+            day = node['days'].setdefault(row['local_day'], {
+                '_sum': 0.0, 'card_samples': 0, 'hours': {},
+            })
+            day['_sum'] += average * count
+            day['card_samples'] += count
+            day['hours'][row['local_hour']] = {
+                'utilization_avg': round(average, 2),
+                'card_samples': count,
+            }
+
+        result = []
+        for key in sorted(nodes):
+            node = nodes[key]
+            node['utilization_avg'] = round(
+                node.pop('_sum') / node['card_samples'], 2
+            )
+            for day in node['days'].values():
+                day['utilization_avg'] = round(
+                    day.pop('_sum') / day['card_samples'], 2
+                )
+            result.append(node)
+        return result
+
     @staticmethod
     def _alert_candidates(snapshot):
         candidates = {}

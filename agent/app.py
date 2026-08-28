@@ -13,6 +13,7 @@ from cluster_common import PROTOCOL_VERSION
 from cluster_common.atomic import write_json_atomic
 from cluster_common.protocol import normalize_sample
 from cluster_common.storage_health import check_capacity
+from cluster_common.timezones import CHINA_STANDARD_TIME
 from . import __version__
 from . import config
 from .sampler import collect
@@ -111,12 +112,18 @@ def run(once=False):
     try:
         while not STOP_EVENT.is_set():
             collected_at = datetime.now(timezone.utc)
-            if collected_at.date() != last_cleanup_day:
+            local_collected_at = collected_at.astimezone(CHINA_STANDARD_TIME)
+            if local_collected_at.date() != last_cleanup_day:
                 if config.MONTHLY_XLSX_ENABLED:
                     try:
-                        through_date = collected_at.date() - timedelta(days=1)
+                        through_date = local_collected_at.date() - timedelta(days=1)
                         updated_workbooks = update_monthly_workbooks(
-                            config.DAILY_DIR, config.MONTHLY_DIR, through_date
+                            config.DAILY_DIR, config.MONTHLY_DIR, through_date,
+                            {
+                                'node_id': config.NODE_ID,
+                                'node_name': config.NODE_NAME,
+                                'cluster_id': config.CLUSTER_ID,
+                            },
                         )
                         for workbook_path in updated_workbooks:
                             LOGGER.info('updated monthly workbook %s', workbook_path)
@@ -125,12 +132,12 @@ def run(once=False):
                 archived_local = archive_old_local_data(
                     (config.DAILY_DIR, config.STATUS_DIR), config.ARCHIVE_DIR,
                     config.RETENTION_DAYS,
-                    now=collected_at,
+                    now=local_collected_at,
                 )
                 archived_workbooks = archive_old_monthly_workbooks(
                     config.MONTHLY_DIR, config.ARCHIVE_DIR,
                     config.RETENTION_DAYS,
-                    collected_at.date(),
+                    local_collected_at.date(),
                 )
                 expired = expire_queued(
                     config.SPOOL_DIR, config.REJECTED_DIR,
@@ -148,7 +155,7 @@ def run(once=False):
                     )
                 if expired:
                     LOGGER.error('%s queued samples expired before upload', expired)
-                last_cleanup_day = collected_at.date()
+                last_cleanup_day = local_collected_at.date()
             cards, collection_error = collect(config.NPU_SMI_BIN, config.COMMAND_TIMEOUT)
             detected_expected = resolve_expected_cards(cards, expected_cards)
             if detected_expected > expected_cards:

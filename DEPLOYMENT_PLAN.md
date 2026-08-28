@@ -97,7 +97,7 @@ Agent 数据保存在每个节点：
 ```text
 /work/monitor/runtime-data/agent/
 ├── daily/
-├── monthly/               # stats_YYYY-MM.xlsx，每日一个 Sheet
+├── monthly/               # 节点名称_YYYY-MM.xlsx，东八区每日一个 Sheet
 ├── sample_status/
 ├── spool/
 ├── rejected/
@@ -120,9 +120,9 @@ Collector 数据保存在主节点：
 
 默认热目录和 Collector 在线查询库保留 180 天；超过 180 天的数据转入 Agent 文件归档或 Collector 独立 SQLite 归档，不直接删除。归档默认无限期保留，容量规划和备份必须覆盖 `runtime-data/agent/archive/` 与 `runtime-data/collector/archive/`。Agent 待上传队列默认最多保留 7 天、20000 个文件或 512 MB，超期队列先进入 `rejected`，随后按热窗口归档。
 
-Agent 继续将每日 CSV 作为可靠原始记录，并在每天第一次采集时用 Python 标准库原子更新月度 `stats_YYYY-MM.xlsx`。工作簿按 UTC 日期创建 Sheet，不依赖 `openpyxl` 等第三方包；当前日期的数据会在次日完成后进入 XLSX，监控开始后的数据缺失日期以空 Sheet 表示。
+Agent 继续将东八区每日 CSV 作为可靠本地记录，并在每天第一次采集时用 Python 标准库原子更新月度 `节点名称_YYYY-MM.xlsx`。工作簿包含节点名称、节点 ID、集群和时区信息，按东八区日期创建 Sheet，不依赖 `openpyxl` 等第三方包；当前日期的数据会在次日完成后进入 XLSX，旧 UTC CSV 会按行时间戳重新分组。
 
-Collector 在 SQLite 中持久化原始采样、逐卡数据、节点最新状态、集群分组、告警生命周期和数据管理审计。旧 schema 1/2 数据库会自动原地升级到 schema 3，不需要清库。Console 支持自定义时间、节点、单卡和集群筛选，原始采样与告警筛选分页，最长默认 31 天的 CSV/XLSX 导出，以及带影响预览和自动备份的错误节点/错误数据管理。
+Collector 在 SQLite 中持久化原始采样、逐卡数据、节点最新状态、集群分组、告警生命周期和数据管理审计。旧 schema 1/2 数据库会自动原地升级到 schema 3，不需要清库。Console 支持自定义时间、节点、单卡和集群筛选，原始采样与告警筛选分页，逐卡 CSV/XLSX 明细导出，东八区当日/本月/自定义区间的节点平均利用率及热力图 XLSX，以及带影响预览和自动备份的错误节点/错误数据管理。
 
 ## 6. 日志和容器生命周期
 
@@ -154,7 +154,7 @@ log files:      5
 - 容器中不存在 `Z` 状态进程；
 - Agent 每次完整采样包含 8 张卡；
 - 节点本地 CSV 在网络中断时继续写入；
-- 月度 XLSX 每天更新一次，Sheet 与已完成 UTC 日期一一对应；
+- 月度 XLSX 每天更新一次，文件带节点名称，Sheet 与已完成东八区日期一一对应；
 - Collector 恢复后 `spool` 自动清空且数据不重复；
 - 上传失败状态跨 Agent 重启保留；
 - 集群利用率按所有新鲜有效卡加权；

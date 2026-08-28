@@ -12,12 +12,12 @@ class CollectorClient:
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
 
-    def _get(self, path, parameters=None):
+    def _get(self, path, parameters=None, timeout=None):
         url = self.base_url + path
         if parameters:
             filtered = {key: value for key, value in parameters.items() if value is not None}
             url += '?' + urlencode(filtered)
-        response = urlopen(url, timeout=self.timeout)
+        response = urlopen(url, timeout=timeout or self.timeout)
         return json.loads(response.read().decode('utf-8'))
 
     def _post(self, path, value):
@@ -65,6 +65,13 @@ class CollectorClient:
             'node_id': node_id, 'cluster_id': cluster_id, 'status': status,
             'q': search,
         })
+
+    def utilization_report(
+            self, start, end, node_id=None, cluster_id=None, timeout=None):
+        return self._get('/internal/v1/utilization-report', {
+            'start': start, 'end': end, 'node_id': node_id,
+            'cluster_id': cluster_id,
+        }, timeout=timeout)
 
     def alerts(self, start=None, end=None, page=1, page_size=100,
                node_id=None, cluster_id=None, severity=None, status=None,

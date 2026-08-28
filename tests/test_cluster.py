@@ -430,6 +430,7 @@ class HttpAndQueueTests(unittest.TestCase):
                 self.assertIn('NPU 集群监控', html)
                 self.assertIn('登记卡数', html)
                 self.assertIn('原始采样记录', html)
+                self.assertIn('本月汇聚报表', html)
             with urlopen(console_url + '/api/snapshot', timeout=2) as response:
                 self.assertEqual(json.loads(response.read())['total_nodes'], 1)
             query = urlencode({
@@ -438,6 +439,19 @@ class HttpAndQueueTests(unittest.TestCase):
                 'format': 'xlsx',
             })
             with urlopen(console_url + '/api/export?' + query, timeout=2) as response:
+                self.assertEqual(
+                    response.headers.get_content_type(),
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                )
+                self.assertTrue(response.read().startswith(b'PK'))
+            report_query = urlencode({
+                'period': 'custom',
+                'start': (NOW - timedelta(minutes=1)).isoformat(timespec='seconds'),
+                'end': (NOW + timedelta(minutes=1)).isoformat(timespec='seconds'),
+            })
+            with urlopen(
+                    console_url + '/api/utilization-report?' + report_query,
+                    timeout=5) as response:
                 self.assertEqual(
                     response.headers.get_content_type(),
                     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

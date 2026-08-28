@@ -8,6 +8,7 @@ import re
 
 from cluster_common.atomic import write_bytes_atomic, write_json_atomic
 from cluster_common.protocol import parse_timestamp
+from cluster_common.timezones import CHINA_STANDARD_TIME
 
 
 CSV_FIELDS = ['timestamp', 'card_id', 'utilization', 'hbm_used_mb', 'hbm_total_mb']
@@ -31,8 +32,11 @@ def _append_fsync(path, payload):
 
 
 def save_local_sample(sample, daily_dir, status_dir):
-    timestamp = sample['collected_at']
-    day = timestamp[:10]
+    local_collected = parse_timestamp(sample['collected_at']).astimezone(
+        CHINA_STANDARD_TIME
+    )
+    timestamp = local_collected.isoformat(timespec='seconds')
+    day = local_collected.date().isoformat()
     if sample['cards']:
         path = os.path.join(daily_dir, 'stats_{}.csv'.format(day))
         include_header = not os.path.exists(path) or os.path.getsize(path) == 0
@@ -55,6 +59,7 @@ def save_local_sample(sample, daily_dir, status_dir):
         'collected_cards', 'received_card_ids', 'missing_card_ids',
         'coverage_percent',
     )}
+    status['collected_at'] = timestamp
     _append_fsync(
         status_path,
         (json.dumps(status, ensure_ascii=False, sort_keys=True) + '\n').encode('utf-8'),
