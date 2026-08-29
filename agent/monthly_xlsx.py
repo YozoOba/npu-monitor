@@ -9,7 +9,9 @@ import zipfile
 from xml.sax.saxutils import escape, quoteattr
 
 from cluster_common.protocol import parse_timestamp
-from cluster_common.timezones import CHINA_STANDARD_TIME
+from cluster_common.timezones import (
+    resolve_timezone, timezone_label, timezone_offset_seconds,
+)
 
 
 CSV_FIELDS = ['timestamp', 'card_id', 'utilization', 'hbm_used_mb', 'hbm_total_mb']
@@ -40,7 +42,8 @@ def _number_cell(reference, value, style=None):
     return '<c r="{}"{}><v>{}</v></c>'.format(reference, style_text, value)
 
 
-def _read_day_rows(path):
+def _read_day_rows(path, local_timezone=None):
+    local_timezone = local_timezone or resolve_timezone('auto')
     seen = set()
     with open(path, 'r', encoding='utf-8', newline='') as handle:
         reader = csv.DictReader(handle)
@@ -52,7 +55,7 @@ def _read_day_rows(path):
             try:
                 source_timestamp = row['timestamp'].strip()
                 local_collected = parse_timestamp(source_timestamp).astimezone(
-                    CHINA_STANDARD_TIME
+                    local_timezone
                 )
                 timestamp = local_collected.isoformat(timespec='seconds')
                 card_id = int(row['card_id'])
@@ -101,7 +104,8 @@ def _read_day_rows(path):
             )
 
 
-def _discover_daily_files(daily_dir, through_date):
+def _discover_daily_files(daily_dir, through_date, local_timezone=None):
+    local_timezone = local_timezone or resolve_timezone('auto')
     paths_by_date = {}
     try:
         names = os.listdir(daily_dir)
@@ -113,7 +117,7 @@ def _discover_daily_files(daily_dir, through_date):
             continue
         path = os.path.join(daily_dir, name)
         for file_date, _timestamp, _card_id, _utilization, _used, _total in (
-                _read_day_rows(path)):
+                _read_day_rows(path, local_timezone)):
             if file_date <= through_date:
                 paths_by_date.setdefault(file_date, set()).add(path)
     months = {}
@@ -125,7 +129,9 @@ def _discover_daily_files(daily_dir, through_date):
     return months
 
 
-def _write_sheet(archive, sheet_index, sheet_date, csv_paths, node_info):
+def _write_sheet(
+        archive, sheet_index, sheet_date, csv_paths, node_info,
+        local_timezone):
     with archive.open('xl/worksheets/sheet{}.xml'.format(sheet_index), 'w') as output:
         def write(value):
             output.write(value.encode('utf-8'))
@@ -140,12 +146,15 @@ def _write_sheet(archive, sheet_index, sheet_date, csv_paths, node_info):
         write('<col min="2" max="2" width="10" customWidth="1"/>')
         write('<col min="3" max="5" width="18" customWidth="1"/>')
         write('</cols><sheetData>')
+        local_timezone_name = timezone_label(
+            timezone_offset_seconds(local_timezone)
+        )
         metadata = (
             ('node_name', node_info['node_name']),
             ('node_id', node_info['node_id']),
             ('cluster_id', node_info['cluster_id']),
             ('date', sheet_date.isoformat()),
-            ('timezone', 'UTC+08:00'),
+            ('timezone', local_timezone_name),
         )
         for row_index, (label, value) in enumerate(metadata, start=1):
             write('<row r="{}">'.format(row_index))
@@ -154,7 +163,8 @@ def _write_sheet(archive, sheet_index, sheet_date, csv_paths, node_info):
             write('</row>')
         write('<row r="7" ht="22" customHeight="1">')
         headings = (
-            'timestamp_utc+08:00', 'card_id', 'utilization',
+            'timestamp_{}'.format(local_timezone_name.lower()),
+            'card_id', 'utilization',
             'hbm_used_mb', 'hbm_total_mb',
         )
         for column, heading in zip('ABCDE', headings):
@@ -165,7 +175,7 @@ def _write_sheet(archive, sheet_index, sheet_date, csv_paths, node_info):
         seen = set()
         rows = (
             values for csv_path in (csv_paths or ())
-            for values in _read_day_rows(csv_path)
+            for values in _read_day_rows(csv_path, local_timezone)
             if values[0] == sheet_date
         )
         for values in rows:
@@ -305,7 +315,8 @@ CORE_XML = (
 )
 
 
-def build_monthly_workbook(day_files, output_path, node_info=None):
+def build_monthly_workbook(
+        day_files, output_path, node_info=None, local_timezone=None):
     if not day_files:
         return None
     day_files = [
@@ -315,6 +326,7 @@ def build_monthly_workbook(day_files, output_path, node_info=None):
     node_info = node_info or {
         'node_id': 'unknown', 'node_name': 'unknown', 'cluster_id': 'default'
     }
+    local_timezone = local_timezone or resolve_timezone('auto')
     output_dir = os.path.dirname(output_path)
     os.makedirs(output_dir, exist_ok=True)
     descriptor, temporary_path = tempfile.mkstemp(
@@ -337,7 +349,8 @@ def build_monthly_workbook(day_files, output_path, node_info=None):
             archive.writestr('xl/styles.xml', STYLES_XML)
             for sheet_index, (file_date, csv_paths) in enumerate(day_files, start=1):
                 _write_sheet(
-                    archive, sheet_index, file_date, csv_paths, node_info
+                    archive, sheet_index, file_date, csv_paths, node_info,
+                    local_timezone,
                 )
         with open(temporary_path, 'rb+') as handle:
             os.fsync(handle.fileno())
@@ -360,11 +373,15 @@ def _safe_filename(value):
 
 
 def update_monthly_workbooks(
-        daily_dir, monthly_dir, through_date, node_info=None):
+        daily_dir, monthly_dir, through_date, node_info=None,
+        local_timezone=None):
     node_info = node_info or {
         'node_id': 'unknown', 'node_name': 'unknown', 'cluster_id': 'default'
     }
-    months = _discover_daily_files(daily_dir, through_date)
+    local_timezone = local_timezone or resolve_timezone('auto')
+    months = _discover_daily_files(
+        daily_dir, through_date, local_timezone
+    )
     updated = []
     active_month = through_date.strftime('%Y-%m')
     for month in sorted(months):
@@ -392,7 +409,9 @@ def update_monthly_workbooks(
         while current_date <= last_date:
             day_files.append((current_date, paths_by_date.get(current_date)))
             current_date += timedelta(days=1)
-        result = build_monthly_workbook(day_files, output_path, node_info)
+        result = build_monthly_workbook(
+            day_files, output_path, node_info, local_timezone
+        )
         if result:
             updated.append(result)
     return updated

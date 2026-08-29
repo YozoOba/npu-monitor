@@ -67,10 +67,12 @@ class CollectorClient:
         })
 
     def utilization_report(
-            self, start, end, node_id=None, cluster_id=None, timeout=None):
+            self, start, end, node_id=None, cluster_id=None,
+            utc_offset_seconds=None, timeout=None):
         return self._get('/internal/v1/utilization-report', {
             'start': start, 'end': end, 'node_id': node_id,
             'cluster_id': cluster_id,
+            'utc_offset_seconds': utc_offset_seconds,
         }, timeout=timeout)
 
     def alerts(self, start=None, end=None, page=1, page_size=100,

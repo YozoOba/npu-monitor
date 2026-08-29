@@ -45,10 +45,18 @@ docker_args=(
     --health-retries 3
     -e PYTHONPATH=/work/monitor
     -e "NPU_MONITOR_INIT_KILL_AFTER=$INIT_KILL_AFTER"
+    -e "NPU_MONITOR_TIMEZONE=${NPU_MONITOR_TIMEZONE:-auto}"
     -e NPU_COLLECTOR_DATA_DIR=/work/monitor/runtime-data/collector
     -e "NPU_COLLECTOR_PORT=$COLLECTOR_PORT"
     -v "$HOST_PROJECT_DIR:/work/monitor"
 )
+
+if [[ -e /etc/localtime ]]; then
+    docker_args+=(-v /etc/localtime:/etc/localtime:ro)
+fi
+if [[ -e /etc/timezone ]]; then
+    docker_args+=(-v /etc/timezone:/etc/timezone:ro)
+fi
 
 optional_collector_variables=(
     NPU_COLLECTOR_HOST
@@ -77,6 +85,7 @@ container_id="$(docker "${docker_args[@]}" "$IMAGE_REF" \
 
 print_created "Collector" "$CONTAINER_NAME" "$container_id" "$IMAGE_REF" "$HOST_PROJECT_DIR"
 echo "  endpoint:   http://127.0.0.1:$COLLECTOR_PORT"
+echo "  timezone:   ${NPU_MONITOR_TIMEZONE:-auto}"
 echo
 echo "Checks:"
 echo "  docker logs --tail 100 $CONTAINER_NAME"

@@ -1,5 +1,9 @@
 import os
 
+from cluster_common.timezones import (
+    resolve_timezone, timezone_label, timezone_offset_seconds,
+)
+
 
 def env_int(name, default, minimum=1):
     raw = os.environ.get(name, str(default))
@@ -21,3 +25,6 @@ HTTP_TIMEOUT = env_int('NPU_CONSOLE_HTTP_TIMEOUT', 10)
 MAX_EXPORT_DAYS = env_int('NPU_CONSOLE_MAX_EXPORT_DAYS', 31)
 REPORT_TIMEOUT = env_int('NPU_CONSOLE_REPORT_TIMEOUT', 120)
 MAX_REPORT_DAYS = env_int('NPU_CONSOLE_MAX_REPORT_DAYS', 180)
+REPORT_TIMEZONE = resolve_timezone(os.environ.get('NPU_MONITOR_TIMEZONE', 'auto'))
+REPORT_TIMEZONE_OFFSET_SECONDS = timezone_offset_seconds(REPORT_TIMEZONE)
+REPORT_TIMEZONE_NAME = timezone_label(REPORT_TIMEZONE_OFFSET_SECONDS)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from datetime import datetime, timedelta, timezone
+import io
 import json
 import os
 import sqlite3
@@ -7,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from unittest import mock
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -431,6 +433,7 @@ class HttpAndQueueTests(unittest.TestCase):
                 self.assertIn('登记卡数', html)
                 self.assertIn('原始采样记录', html)
                 self.assertIn('本月汇聚报表', html)
+                self.assertIn('报表时区', html)
             with urlopen(console_url + '/api/snapshot', timeout=2) as response:
                 self.assertEqual(json.loads(response.read())['total_nodes'], 1)
             query = urlencode({
@@ -448,6 +451,7 @@ class HttpAndQueueTests(unittest.TestCase):
                 'period': 'custom',
                 'start': (NOW - timedelta(minutes=1)).isoformat(timespec='seconds'),
                 'end': (NOW + timedelta(minutes=1)).isoformat(timespec='seconds'),
+                'timezone': 'UTC',
             })
             with urlopen(
                     console_url + '/api/utilization-report?' + report_query,
@@ -456,7 +460,13 @@ class HttpAndQueueTests(unittest.TestCase):
                     response.headers.get_content_type(),
                     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 )
-                self.assertTrue(response.read().startswith(b'PK'))
+                report_bytes = response.read()
+                self.assertTrue(report_bytes.startswith(b'PK'))
+            with zipfile.ZipFile(io.BytesIO(report_bytes)) as archive:
+                summary = archive.read(
+                    'xl/worksheets/sheet1.xml'
+                ).decode('utf-8')
+            self.assertIn('UTC+00:00', summary)
         finally:
             console_server.shutdown()
             console_server.server_close()

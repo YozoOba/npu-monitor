@@ -9,6 +9,7 @@ import zipfile
 
 from cluster_common import PROTOCOL_VERSION
 from cluster_common.protocol import normalize_sample
+from cluster_common.timezones import resolve_timezone
 from collector.storage import CollectorStorage
 from console.utilization_report import (
     build_utilization_report, report_dates, resolve_report_range,
@@ -16,6 +17,8 @@ from console.utilization_report import (
 
 
 MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+EAST8 = resolve_timezone('UTC+08:00')
+UTC_ZONE = resolve_timezone('UTC')
 
 
 def sample(
@@ -51,15 +54,16 @@ class UtilizationReportTests(unittest.TestCase):
         self.storage.close()
         self.temporary.cleanup()
 
-    def test_report_ranges_use_china_standard_time(self):
+    def test_report_ranges_support_east8_boundaries(self):
         now = datetime(2026, 8, 19, 12, 34, 56, tzinfo=timezone.utc)
-        month = resolve_report_range('month', now=now)
+        month = resolve_report_range('month', now=now, local_timezone=EAST8)
         self.assertEqual(month['utc_start'], '2026-07-31T16:00:00+00:00')
         self.assertEqual(month['utc_end'], '2026-08-19T12:34:56+00:00')
-        day = resolve_report_range('day', now=now)
+        day = resolve_report_range('day', now=now, local_timezone=EAST8)
         self.assertEqual(day['utc_start'], '2026-08-18T16:00:00+00:00')
         custom = resolve_report_range(
-            'custom', '2026-08-01', '2026-08-02', now=now
+            'custom', '2026-08-01', '2026-08-02', now=now,
+            local_timezone=EAST8,
         )
         self.assertEqual(custom['utc_start'], '2026-07-31T16:00:00+00:00')
         self.assertEqual(custom['utc_end'], '2026-08-02T16:00:00+00:00')
@@ -78,6 +82,7 @@ class UtilizationReportTests(unittest.TestCase):
         nodes = self.storage.utilization_report(
             int(datetime(2026, 8, 1, 15, tzinfo=timezone.utc).timestamp()),
             int(datetime(2026, 8, 1, 17, tzinfo=timezone.utc).timestamp()),
+            8 * 60 * 60,
         )
         self.assertEqual(len(nodes), 1)
         node = nodes[0]
@@ -103,6 +108,7 @@ class UtilizationReportTests(unittest.TestCase):
         nodes = self.storage.utilization_report(
             int(datetime(2026, 8, 1, 15, tzinfo=timezone.utc).timestamp()),
             int(datetime(2026, 8, 1, 17, tzinfo=timezone.utc).timestamp()),
+            8 * 60 * 60,
             cluster_id='new-cluster',
         )
         self.assertEqual(len(nodes), 1)
@@ -121,11 +127,12 @@ class UtilizationReportTests(unittest.TestCase):
         end = datetime(2026, 8, 2, 16, tzinfo=timezone.utc)
         aggregate = {
             'nodes': self.storage.utilization_report(
-                int(start.timestamp()), int(end.timestamp())
+                int(start.timestamp()), int(end.timestamp()), 8 * 60 * 60
             )
         }
         report_range = resolve_report_range(
-            'custom', '2026-08-01', '2026-08-02'
+            'custom', '2026-08-01', '2026-08-02',
+            local_timezone=EAST8,
         )
         path = os.path.join(self.temporary.name, 'report.xlsx')
         result = build_utilization_report(
@@ -156,6 +163,24 @@ class UtilizationReportTests(unittest.TestCase):
         self.assertIn('<v>60.0</v>', second_day)
         self.assertIn('FFEAF4FB', styles)
         self.assertIn('FF033E57', styles)
+
+    def test_utc_site_uses_utc_day_boundaries_and_heatmap_hours(self):
+        now = datetime(2026, 8, 19, 12, 34, 56, tzinfo=timezone.utc)
+        day = resolve_report_range('day', now=now, local_timezone=UTC_ZONE)
+        self.assertEqual(day['utc_start'], '2026-08-19T00:00:00+00:00')
+        self.assertEqual(day['timezone_name'], 'UTC+00:00')
+        self.storage.ingest(sample(
+            '2026-08-01T23:30:00+00:00', [25, 75]
+        ))
+        nodes = self.storage.utilization_report(
+            int(datetime(2026, 8, 1, 23, tzinfo=timezone.utc).timestamp()),
+            int(datetime(2026, 8, 2, 0, tzinfo=timezone.utc).timestamp()),
+            0,
+        )
+        self.assertEqual(
+            nodes[0]['days']['2026-08-01']['hours']['23']['utilization_avg'],
+            50.0,
+        )
 
 
 if __name__ == '__main__':

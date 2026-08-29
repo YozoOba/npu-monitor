@@ -45,6 +45,7 @@ docker_args=(
     --health-retries 3
     -e PYTHONPATH=/work/monitor
     -e "NPU_MONITOR_INIT_KILL_AFTER=$INIT_KILL_AFTER"
+    -e "NPU_MONITOR_TIMEZONE=${NPU_MONITOR_TIMEZONE:-auto}"
     -e "NPU_CONSOLE_COLLECTOR_URL=$COLLECTOR_URL"
     -e "NPU_CONSOLE_PORT=$CONSOLE_PORT"
     -e "NPU_CONSOLE_HTTP_TIMEOUT=${NPU_CONSOLE_HTTP_TIMEOUT:-10}"
@@ -54,12 +55,20 @@ docker_args=(
     -v "$HOST_PROJECT_DIR:/work/monitor"
 )
 
+if [[ -e /etc/localtime ]]; then
+    docker_args+=(-v /etc/localtime:/etc/localtime:ro)
+fi
+if [[ -e /etc/timezone ]]; then
+    docker_args+=(-v /etc/timezone:/etc/timezone:ro)
+fi
+
 container_id="$(docker "${docker_args[@]}" "$IMAGE_REF" \
     /work/monitor/deploy/mini_init.py python3 -u -m console.web)"
 
 print_created "Console" "$CONTAINER_NAME" "$container_id" "$IMAGE_REF" "$HOST_PROJECT_DIR"
 echo "  endpoint:   http://127.0.0.1:$CONSOLE_PORT"
 echo "  collector:  $COLLECTOR_URL"
+echo "  timezone:   ${NPU_MONITOR_TIMEZONE:-auto}"
 echo
 echo "Checks:"
 echo "  docker logs --tail 100 $CONTAINER_NAME"

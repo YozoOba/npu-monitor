@@ -18,6 +18,7 @@ Recommended environment:
   NPU_AGENT_NODE_ID       Stable node ID (default: host short hostname)
   NPU_AGENT_NODE_NAME     Display name (default: host hostname)
   NPU_AGENT_CLUSTER_ID    Cluster group (default: default)
+  NPU_MONITOR_TIMEZONE    auto (default), UTC, or UTC+08:00
 
 Optional container settings:
   NPU_AGENT_CONTAINER             default: npu-monitor-agent
@@ -118,8 +119,16 @@ docker_args=(
     -e "NPU_AGENT_NODE_ID=${NPU_AGENT_NODE_ID:-$HOST_SHORT_NAME}"
     -e "NPU_AGENT_NODE_NAME=${NPU_AGENT_NODE_NAME:-$HOST_FULL_NAME}"
     -e "NPU_AGENT_CLUSTER_ID=${NPU_AGENT_CLUSTER_ID:-default}"
+    -e "NPU_MONITOR_TIMEZONE=${NPU_MONITOR_TIMEZONE:-auto}"
     -e NPU_AGENT_DATA_DIR=/work/monitor/runtime-data/agent
 )
+
+if [[ -e /etc/localtime ]]; then
+    docker_args+=(-v /etc/localtime:/etc/localtime:ro)
+fi
+if [[ -e /etc/timezone ]]; then
+    docker_args+=(-v /etc/timezone:/etc/timezone:ro)
+fi
 
 for npu_device_path in "${npu_device_paths[@]}"; do
     docker_args+=(--device "$npu_device_path")
@@ -174,6 +183,7 @@ print_created "Agent" "$CONTAINER_NAME" "$container_id" "$IMAGE_REF" "$HOST_PROJ
 echo "  node_id:    ${NPU_AGENT_NODE_ID:-$HOST_SHORT_NAME}"
 echo "  cluster_id: ${NPU_AGENT_CLUSTER_ID:-default}"
 echo "  collector:  $NPU_AGENT_COLLECTOR_URL"
+echo "  timezone:   ${NPU_MONITOR_TIMEZONE:-auto}"
 echo "  devices:    ${#npu_device_paths[@]}"
 echo "  HCCL mounts: $HCCL_MOUNTS"
 echo

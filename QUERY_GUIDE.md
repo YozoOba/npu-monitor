@@ -42,7 +42,7 @@ http://主节点IP:18081/
 | 告警记录 | 告警类型、级别、状态、开始/恢复时间和信息 | 时间、集群、节点、级别、状态、类型、分页 |
 | 原始采样 | 采样状态、卡覆盖、缺失卡、接收时间 | 时间、集群、节点、状态、节点名称/ID 搜索、分页 |
 | 数据导出 | 逐卡 CSV 或 XLSX | 时间、集群、节点、卡号、采样状态 |
-| 汇聚热力图报表 | 按节点的区间/每日/每小时平均利用率 XLSX | 东八区当天、本月或顶部自定义时间，集群、节点 |
+| 汇聚热力图报表 | 按节点的区间/每日/每小时平均利用率 XLSX | 局点时区当天、本月或顶部自定义时间，集群、节点 |
 | 管理审计 | 最近执行的节点/数据管理操作 | 当前页面显示最近 10 条 |
 
 节点状态含义：
@@ -191,7 +191,7 @@ hbm_used_mb,hbm_total_mb
 
 ### 3.8 节点平均利用率与热力图报表
 
-生成东八区本月报表：
+生成当前局点时区的本月报表：
 
 ```bash
 python3 -m console.cli \
@@ -202,11 +202,13 @@ python3 -m console.cli \
 
 查询类型：
 
-| `--period` | 东八区查询范围 |
+| `--period` | 当前报表时区查询范围 |
 |---|---|
 | `day` | 当天 00:00 到当前时间 |
 | `month` | 本月 1 日 00:00 到当前时间 |
-| `custom` | `--start` 到 `--end`；无时区的值按 `UTC+08:00` 解释 |
+| `custom` | `--start` 到 `--end`；无时区的值按当前报表时区解释 |
+
+默认时区由 `NPU_MONITOR_TIMEZONE=auto` 决定，即跟随容器/宿主机 UTC 偏移。CLI 可通过 `--timezone UTC` 或 `--timezone UTC+08:00` 覆盖单次报表；采样协议和 SQLite 不受影响，始终使用 UTC。
 
 自定义报表：
 
@@ -214,7 +216,7 @@ python3 -m console.cli \
 python3 -m console.cli \
   --collector-url http://主节点IP:18080 utilization-report \
   --period custom --start 2026-08-01 --end 2026-08-07 \
-  --cluster training-a --node npu-node-01 \
+  --cluster training-a --node npu-node-01 --timezone UTC+08:00 \
   --output /work/monitor/runtime-data/npu-utilization-custom.xlsx
 ```
 
@@ -281,7 +283,7 @@ python3 -m console.cli \
 | `/api/samples` | `start`、`end`、`hours`、`cluster_id`、`node_id`、`status`、`q`、`page`、`page_size` |
 | `/api/alerts` | `start`、`end`、`hours`、`cluster_id`、`node_id`、`severity`、`status`、`type`、`page`、`page_size` |
 | `/api/export` | `start`、`end`、`hours`、`cluster_id`、`node_id`、`card_id`、`status`、`format` |
-| `/api/utilization-report` | `period=day\|month\|custom`、`start`、`end`、`cluster_id`、`node_id` |
+| `/api/utilization-report` | `period=day\|month\|custom`、`start`、`end`、`cluster_id`、`node_id`、`timezone` |
 | `/api/admin/operations` | `page`、`page_size` |
 
 其中 `cluster_id`、`node_id`、告警 `type` 和各种状态参数均为精确匹配；`q` 是节点 ID/名称的包含搜索。
@@ -344,13 +346,14 @@ curl -fS --get http://主节点IP:18081/api/utilization-report \
   -o npu-utilization-month.xlsx
 ```
 
-下载自定义东八区范围报表：
+下载自定义时区范围报表：
 
 ```bash
 curl -fS --get http://主节点IP:18081/api/utilization-report \
   --data-urlencode 'period=custom' \
   --data-urlencode 'start=2026-08-01' \
   --data-urlencode 'end=2026-08-07' \
+  --data-urlencode 'timezone=UTC+08:00' \
   -o npu-utilization-custom.xlsx
 ```
 
@@ -372,6 +375,8 @@ Console 会把查询转发到 Collector。内部接口与 Console 接口的对�
 | `POST /api/admin/execute` | `POST /internal/v1/admin/execute` |
 
 Collector 的 `/health` 可直接检查数据库完整性和磁盘容量。`POST /api/v1/samples` 是 Agent 数据上报接口，不是查询接口。
+
+`/internal/v1/utilization-report` 额外接受 `utc_offset_seconds`，由 Console 自动传入所选报表时区的整分钟偏移；直接调用 Collector 时未提供该参数，则使用 Collector 的 `NPU_MONITOR_TIMEZONE`。
 
 没有特殊排障需求时，外部查询应使用 Console API；CLI 因为部署在可信内网中，会直接访问 Collector。
 
@@ -401,13 +406,15 @@ Collector 的 `/health` 可直接检查数据库完整性和磁盘容量。`POST
 
 因此，查询超过热数据窗口的长期历史时，应直接保留日常导出的 CSV/XLSX，或后续增加专门的归档查询能力。
 
-### 6.4 东八区报表口径
+### 6.4 局点时区自适应口径
 
 - Agent 与 Collector 的协议时间和 SQLite epoch 保持 UTC，以保证跨节点去重和断线补传稳定；
-- Agent 本地 CSV、状态文件和月度工作簿按固定 `UTC+08:00` 日期保存；
-- 汇聚热力图报表的当天、本月、日期、小时分组全部使用固定 `UTC+08:00`，不依赖服务器系统时区；
-- `period=day` 和 `period=month` 使用主节点当前真实时间换算东八区边界；
-- 自定义时间未携带时区时按东八区解释，携带 `Z` 或偏移量时先换算为东八区。
+- `NPU_MONITOR_TIMEZONE` 默认为 `auto`，容器部署脚本挂载宿主机时区文件后自动采用本机 UTC 偏移；
+- 如果宿主机时区与业务时区不同，可显式设为 `UTC`、`UTC+08:00` 或其他不超过 ±14 小时的整分钟固定偏移；
+- Agent 本地 CSV、状态文件和月度工作簿按 Agent 的实际配置时区保存；
+- 汇聚热力图的当天、本月、日期和小时由 Console 的报表时区决定，Console 会把实际偏移传给 Collector，避免两个进程的默认设置不同导致分组错误；
+- `period=day` 和 `period=month` 使用主节点当前真实时间换算所选时区边界；
+- 自定义时间未携带时区时按所选报表时区解释，携带 `Z` 或偏移量时先换算到所选时区。
 
 ## 7. 常见问题
 

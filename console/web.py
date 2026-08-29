@@ -12,6 +12,8 @@ import threading
 from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError
 
+from cluster_common.timezones import resolve_timezone
+
 from . import config
 from . import __version__
 from .client import CollectorClient
@@ -49,6 +51,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
  <label>开始时间<input id="start" type="datetime-local" step="1"></label>
  <label>结束时间<input id="end" type="datetime-local" step="1"></label>
  <label>聚合粒度<select id="bucket"><option value="300">5分钟</option><option value="900">15分钟</option><option value="3600">1小时</option><option value="86400">1天</option></select></label>
+ <label>报表时区<input id="reportTimezone" placeholder="默认 / UTC / UTC+08:00"></label>
  <label>节点<input id="historyNode" placeholder="node_id"></label>
  <label>卡号<input id="card" type="number" min="0" placeholder="全部"></label>
  <button onclick="refreshAll()">查询</button><button class="secondary" onclick="exportData('csv')">导出明细 CSV</button><button class="secondary" onclick="exportData('xlsx')">导出明细 XLSX</button><button class="secondary" onclick="utilizationReport('day')">今日汇聚报表</button><button class="secondary" onclick="utilizationReport('month')">本月汇聚报表</button><button class="secondary" onclick="utilizationReport('custom')">当前时间范围汇聚报表</button>
@@ -84,7 +87,7 @@ function changePage(kind,delta){let page=kind==='node'?nodePage:kind==='alert'?a
 async function loadAlerts(){const p=params({page:alertPage,page_size:$('#alertPageSize').value,severity:$('#alertSeverity').value,status:$('#alertStatus').value,type:$('#alertType').value.trim()});p.delete('bucket');p.delete('card_id');const d=await get('/api/alerts',p);alertPages=Math.max(1,d.pages);if(alertPage>alertPages){alertPage=alertPages;return loadAlerts()}$('#alertRows').innerHTML=d.items.map(a=>`<tr><td>${esc(a.started_at)}</td><td>${esc(a.cluster_id)}</td><td>${esc(a.node_id)}</td><td>${esc(a.alert_type)}</td><td class="${esc(a.severity)}">${esc(a.severity)}</td><td class="${esc(a.status)}">${esc(a.status)}</td><td>${esc(a.message)}</td><td>${esc(a.resolved_at||'-')}</td></tr>`).join('');$('#alertPager').textContent=`第 ${d.page}/${Math.max(1,d.pages)} 页，共 ${d.total} 条告警`}
 async function loadSamples(){const p=params({page:samplePage,page_size:$('#samplePageSize').value,status:$('#sampleStatus').value,q:$('#sampleSearch').value.trim()});p.delete('bucket');p.delete('card_id');const d=await get('/api/samples',p);samplePages=Math.max(1,d.pages);if(samplePage>samplePages){samplePage=samplePages;return loadSamples()}$('#sampleRows').innerHTML=d.items.map(s=>`<tr><td>${esc(s.collected_at)}</td><td>${esc(s.cluster_id)}</td><td>${esc(s.node_id)}</td><td>${esc(s.status)}</td><td>${s.collected_cards}/${s.expected_cards} (${pct(s.coverage_percent)})</td><td>${esc((s.missing_card_ids||[]).join(','))}</td><td>${esc(s.received_at)}</td><td><button class="danger" onclick="previewSingleSample('${s.sample_id}')">删除</button></td></tr>`).join('');$('#samplePager').textContent=`第 ${d.page}/${Math.max(1,d.pages)} 页，共 ${d.total} 条采样`}
 function exportData(format){const p=params({format,status:$('#sampleStatus').value});p.delete('bucket');location.href='/api/export?'+p}
-function utilizationReport(period){const p=new URLSearchParams({period});if($('#cluster').value)p.set('cluster_id',$('#cluster').value);if($('#historyNode').value.trim())p.set('node_id',$('#historyNode').value.trim());if(period==='custom'){p.set('start',iso('#start'));p.set('end',iso('#end'))}location.href='/api/utilization-report?'+p}
+function utilizationReport(period){const p=new URLSearchParams({period});if($('#cluster').value)p.set('cluster_id',$('#cluster').value);if($('#historyNode').value.trim())p.set('node_id',$('#historyNode').value.trim());if($('#reportTimezone').value.trim())p.set('timezone',$('#reportTimezone').value.trim());if(period==='custom'){p.set('start',iso('#start'));p.set('end',iso('#end'))}location.href='/api/utilization-report?'+p}
 function selectNode(id){const n=nodeCache[id];$('#adminNodeId').value=id;$('#deleteNodeId').value=id;if(n){$('#adminNodeName').value=n.node_name;$('#adminClusterId').value=n.cluster_id}document.querySelector('#adminNodeId').scrollIntoView({behavior:'smooth',block:'center'})}
 async function previewManagement(value){try{pendingManagement=null;$('#executeAdmin').disabled=true;$('#adminPreview').className='';$('#adminPreview').textContent='正在计算影响范围…';const p=await post('/api/admin/preview',value);pendingManagement={...value,confirmation_token:p.confirmation_token};$('#adminPreview').textContent=JSON.stringify({警告:p.warning,条件:p.criteria,影响:p.impact},null,2);$('#executeAdmin').disabled=false}catch(e){$('#adminPreview').textContent='预览失败：'+e.message;$('#adminPreview').className='error'}}
 function previewNodeUpdate(){previewManagement({operation:'update_node',node_id:$('#adminNodeId').value.trim(),node_name:$('#adminNodeName').value.trim()||null,cluster_id:$('#adminClusterId').value.trim()||null})}
@@ -192,6 +195,7 @@ def make_handler(client):
                 elif parsed.path == '/health':
                     self.send_json(200, {
                         'status': 'healthy', 'console_version': __version__,
+                        'report_timezone': config.REPORT_TIMEZONE_NAME,
                         'collector': client.health(),
                     })
                 elif parsed.path == '/api/snapshot':
@@ -266,15 +270,22 @@ def make_handler(client):
                         except OSError:
                             pass
                 elif parsed.path == '/api/utilization-report':
+                    report_timezone = (
+                        resolve_timezone(_first(query, 'timezone'))
+                        if _first(query, 'timezone')
+                        else config.REPORT_TIMEZONE
+                    )
                     report_range = resolve_report_range(
                         _first(query, 'period') or 'month',
                         _first(query, 'start'), _first(query, 'end'),
                         max_days=config.MAX_REPORT_DAYS,
+                        local_timezone=report_timezone,
                     )
                     aggregate = client.utilization_report(
                         report_range['utc_start'], report_range['utc_end'],
                         _first(query, 'node_id'), _first(query, 'cluster_id'),
                         timeout=config.REPORT_TIMEOUT,
+                        utc_offset_seconds=report_range['utc_offset_seconds'],
                     )
                     descriptor, path = tempfile.mkstemp(
                         prefix='npu-utilization-', suffix='.xlsx'
@@ -342,6 +353,7 @@ def main():
 
     signal.signal(signal.SIGTERM, stop_server)
     signal.signal(signal.SIGINT, stop_server)
+    LOGGER.info('default report timezone is %s', config.REPORT_TIMEZONE_NAME)
     LOGGER.info('console listening on %s:%s', config.HOST, config.PORT)
     try:
         server.serve_forever(poll_interval=0.5)

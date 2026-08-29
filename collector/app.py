@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from cluster_common.atomic import write_json_atomic
 from cluster_common.protocol import ProtocolError, normalize_sample, parse_timestamp
 from cluster_common.storage_health import check_capacity
-from cluster_common.timezones import CHINA_UTC_OFFSET_SECONDS
+from cluster_common.timezones import timezone_label
 from . import __version__
 from . import config
 from .management import ConfirmationMismatchError, ManagementService
@@ -219,6 +219,7 @@ def make_handler(application):
                     self.send_json(200 if healthy else 503, {
                         'status': 'healthy' if healthy else 'unhealthy',
                         'collector_version': __version__,
+                        'report_timezone': config.REPORT_TIMEZONE_NAME,
                         **health,
                     })
                 except Exception as exc:
@@ -342,13 +343,22 @@ def make_handler(application):
                 try:
                     query = parse_qs(parsed.query)
                     start, end = query_time_range(query)
+                    utc_offset_seconds = query_int(
+                        query, 'utc_offset_seconds',
+                        config.REPORT_TIMEZONE_OFFSET_SECONDS,
+                        -14 * 60 * 60, 14 * 60 * 60,
+                    )
+                    if utc_offset_seconds % 60:
+                        raise ValueError(
+                            'utc_offset_seconds must use whole minutes'
+                        )
                     self.send_json(200, {
                         'start': start.isoformat(timespec='seconds'),
                         'end': end.isoformat(timespec='seconds'),
-                        'timezone': 'UTC+08:00',
+                        'timezone': timezone_label(utc_offset_seconds),
                         'nodes': application.storage.utilization_report(
                             int(start.timestamp()), int(end.timestamp()),
-                            CHINA_UTC_OFFSET_SECONDS,
+                            utc_offset_seconds,
                             query.get('node_id', [None])[0],
                             query.get('cluster_id', [None])[0],
                         ),
@@ -424,6 +434,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, stop_server)
     signal.signal(signal.SIGINT, stop_server)
     application.start()
+    LOGGER.info('default report timezone is %s', config.REPORT_TIMEZONE_NAME)
     LOGGER.info('collector listening on %s:%s', config.HOST, config.PORT)
     try:
         server.serve_forever(poll_interval=0.5)

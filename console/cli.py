@@ -5,6 +5,8 @@ import json
 import os
 import sys
 
+from cluster_common.timezones import resolve_timezone
+
 from . import config
 from .client import CollectorClient
 from .export import create_export, resolve_range
@@ -127,6 +129,10 @@ def main(argv=None):
     report.add_argument('--end')
     report.add_argument('--node')
     report.add_argument('--cluster')
+    report.add_argument(
+        '--timezone',
+        help='auto, UTC, or a fixed offset such as UTC+08:00',
+    )
     report.add_argument('--output', required=True)
 
     node_update = subparsers.add_parser('node-update')
@@ -195,13 +201,19 @@ def main(argv=None):
             )
             print('exported {} rows to {}'.format(count, output))
         elif command == 'utilization-report':
+            report_timezone = (
+                resolve_timezone(args.timezone)
+                if args.timezone else config.REPORT_TIMEZONE
+            )
             report_range = resolve_report_range(
                 args.period, args.start, args.end,
                 max_days=config.MAX_REPORT_DAYS,
+                local_timezone=report_timezone,
             )
             aggregate = client.utilization_report(
                 report_range['utc_start'], report_range['utc_end'],
                 args.node, args.cluster, timeout=config.REPORT_TIMEOUT,
+                utc_offset_seconds=report_range['utc_offset_seconds'],
             )
             output = os.path.abspath(args.output)
             output_dir = os.path.dirname(output)

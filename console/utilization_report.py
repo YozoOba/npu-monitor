@@ -5,7 +5,9 @@ import zipfile
 from xml.sax.saxutils import escape, quoteattr
 
 from cluster_common.protocol import ProtocolError, parse_timestamp
-from cluster_common.timezones import CHINA_STANDARD_TIME
+from cluster_common.timezones import (
+    resolve_timezone, timezone_label, timezone_offset_seconds,
+)
 
 
 HEAT_COLORS = (
@@ -20,17 +22,17 @@ STYLE_META_LABEL = 5
 STYLE_HEAT_BASE = 6
 
 
-def _parse_local_boundary(value, is_end=False):
+def _parse_local_boundary(value, local_timezone, is_end=False):
     if not isinstance(value, str) or not value.strip():
         raise ValueError('custom report requires start and end')
     value = value.strip()
     if len(value) == 10:
         parsed = datetime.strptime(value, '%Y-%m-%d').replace(
-            tzinfo=CHINA_STANDARD_TIME
+            tzinfo=local_timezone
         )
         return parsed + timedelta(days=1) if is_end else parsed
     try:
-        return parse_timestamp(value).astimezone(CHINA_STANDARD_TIME)
+        return parse_timestamp(value).astimezone(local_timezone)
     except ProtocolError:
         pass
     for pattern in (
@@ -38,24 +40,29 @@ def _parse_local_boundary(value, is_end=False):
             '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M'):
         try:
             return datetime.strptime(value, pattern).replace(
-                tzinfo=CHINA_STANDARD_TIME
+                tzinfo=local_timezone
             )
         except ValueError:
             continue
     raise ValueError(
-        'report time must be YYYY-MM-DD or ISO 8601; timezone-less values use UTC+08:00'
+        'report time must be YYYY-MM-DD or ISO 8601; timezone-less values use '
+        '{}'.format(timezone_label(timezone_offset_seconds(local_timezone)))
     )
 
 
 def resolve_report_range(
-        period, start=None, end=None, now=None, max_days=180):
+        period, start=None, end=None, now=None, max_days=180,
+        local_timezone=None):
+    local_timezone = local_timezone or resolve_timezone('auto')
+    local_timezone_offset = timezone_offset_seconds(local_timezone)
+    local_timezone_name = timezone_label(local_timezone_offset)
     period = (period or 'month').strip().lower()
     if period not in ('month', 'day', 'custom'):
         raise ValueError('period must be month, day or custom')
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
-    local_now = now.astimezone(CHINA_STANDARD_TIME)
+    local_now = now.astimezone(local_timezone)
     if period == 'month':
         local_start = local_now.replace(
             day=1, hour=0, minute=0, second=0, microsecond=0
@@ -67,8 +74,10 @@ def resolve_report_range(
         )
         local_end = local_now
     else:
-        local_start = _parse_local_boundary(start)
-        local_end = _parse_local_boundary(end, is_end=True)
+        local_start = _parse_local_boundary(start, local_timezone)
+        local_end = _parse_local_boundary(
+            end, local_timezone, is_end=True
+        )
     if local_end <= local_start:
         raise ValueError('report end must be later than start')
     if (local_end - local_start).total_seconds() > max_days * 86400:
@@ -77,6 +86,9 @@ def resolve_report_range(
         'period': period,
         'local_start': local_start,
         'local_end': local_end,
+        'timezone': local_timezone,
+        'timezone_name': local_timezone_name,
+        'utc_offset_seconds': local_timezone_offset,
         'utc_start': local_start.astimezone(timezone.utc).isoformat(
             timespec='seconds'
         ),
@@ -166,7 +178,7 @@ def _metadata(report_range, generated_at):
             report_range['local_start'].isoformat(timespec='seconds'),
             report_range['local_end'].isoformat(timespec='seconds'),
         )),
-        ('时区', 'UTC+08:00'),
+        ('时区', report_range['timezone_name']),
         ('生成时间', generated_at.isoformat(timespec='seconds')),
         ('计算口径', '单节点全部逐卡采样点的算术平均值'),
     )
@@ -261,7 +273,7 @@ def _write_daily_sheet(
         )
         metadata = (
             ('日期', day.isoformat()),
-            ('时区', 'UTC+08:00'),
+            ('时区', report_range['timezone_name']),
             ('查询范围', '{} 至 {}'.format(
                 report_range['local_start'].isoformat(timespec='seconds'),
                 report_range['local_end'].isoformat(timespec='seconds'),
@@ -415,7 +427,7 @@ ROOT_RELS = (
 
 def build_utilization_report(output_path, report_range, aggregate, now=None):
     generated_at = (now or datetime.now(timezone.utc)).astimezone(
-        CHINA_STANDARD_TIME
+        report_range['timezone']
     )
     dates = report_dates(report_range)
     sheet_names = ['汇总'] + [value.isoformat() for value in dates]

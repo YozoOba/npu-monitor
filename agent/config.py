@@ -1,6 +1,10 @@
 import os
 import socket
 
+from cluster_common.timezones import (
+    resolve_timezone, timezone_label, timezone_offset_seconds,
+)
+
 
 def env_int(name, default, minimum=0):
     raw = os.environ.get(name, str(default))
@@ -52,6 +56,9 @@ MIN_FREE_BYTES = env_int('NPU_AGENT_MIN_FREE_BYTES', 100 * 1024 * 1024, 0)
 MIN_FREE_INODES = env_int('NPU_AGENT_MIN_FREE_INODES', 1000, 0)
 NPU_SMI_BIN = os.environ.get('NPU_AGENT_NPU_SMI_BIN', 'npu-smi')
 MONTHLY_XLSX_ENABLED = env_bool('NPU_AGENT_MONTHLY_XLSX_ENABLED', True)
+LOCAL_TIMEZONE = resolve_timezone(os.environ.get('NPU_MONITOR_TIMEZONE', 'auto'))
+LOCAL_TIMEZONE_OFFSET_SECONDS = timezone_offset_seconds(LOCAL_TIMEZONE)
+LOCAL_TIMEZONE_NAME = timezone_label(LOCAL_TIMEZONE_OFFSET_SECONDS)
 
 
 def validate():

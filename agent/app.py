@@ -13,7 +13,6 @@ from cluster_common import PROTOCOL_VERSION
 from cluster_common.atomic import write_json_atomic
 from cluster_common.protocol import normalize_sample
 from cluster_common.storage_health import check_capacity
-from cluster_common.timezones import CHINA_STANDARD_TIME
 from . import __version__
 from . import config
 from .sampler import collect
@@ -81,6 +80,7 @@ def write_agent_health(sample, collection_error=None, local_error=None):
         'agent_version': __version__,
         'node_id': config.NODE_ID,
         'cluster_id': config.CLUSTER_ID,
+        'local_timezone': config.LOCAL_TIMEZONE_NAME,
         'last_attempt': sample['collected_at'],
         'sample_status': sample['status'],
         'expected_cards': sample['expected_cards'],
@@ -112,7 +112,7 @@ def run(once=False):
     try:
         while not STOP_EVENT.is_set():
             collected_at = datetime.now(timezone.utc)
-            local_collected_at = collected_at.astimezone(CHINA_STANDARD_TIME)
+            local_collected_at = collected_at.astimezone(config.LOCAL_TIMEZONE)
             if local_collected_at.date() != last_cleanup_day:
                 if config.MONTHLY_XLSX_ENABLED:
                     try:
@@ -124,6 +124,7 @@ def run(once=False):
                                 'node_name': config.NODE_NAME,
                                 'cluster_id': config.CLUSTER_ID,
                             },
+                            config.LOCAL_TIMEZONE,
                         )
                         for workbook_path in updated_workbooks:
                             LOGGER.info('updated monthly workbook %s', workbook_path)
@@ -172,7 +173,10 @@ def run(once=False):
                 )
                 if not capacity_ok:
                     raise OSError('local storage unavailable: {}'.format(capacity))
-                save_local_sample(sample, config.DAILY_DIR, config.STATUS_DIR)
+                save_local_sample(
+                    sample, config.DAILY_DIR, config.STATUS_DIR,
+                    config.LOCAL_TIMEZONE,
+                )
                 enqueue(
                     sample, config.SPOOL_DIR, config.SPOOL_MAX_FILES,
                     config.SPOOL_MAX_BYTES,
@@ -212,6 +216,7 @@ def main(argv=None):
     configure_logging()
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
+    LOGGER.info('local file timezone is %s', config.LOCAL_TIMEZONE_NAME)
     try:
         return run(args.once)
     except Exception as exc:

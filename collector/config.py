@@ -1,5 +1,9 @@
 import os
 
+from cluster_common.timezones import (
+    resolve_timezone, timezone_label, timezone_offset_seconds,
+)
+
 
 def env_int(name, default, minimum=0):
     raw = os.environ.get(name, str(default))
@@ -35,6 +39,9 @@ BUSY_UTILIZATION = env_int('NPU_COLLECTOR_BUSY_UTILIZATION', 80, 0)
 IDLE_UTILIZATION = env_int('NPU_COLLECTOR_IDLE_UTILIZATION', 10, 0)
 MIN_FREE_BYTES = env_int('NPU_COLLECTOR_MIN_FREE_BYTES', 200 * 1024 * 1024, 0)
 MIN_FREE_INODES = env_int('NPU_COLLECTOR_MIN_FREE_INODES', 1000, 0)
+REPORT_TIMEZONE = resolve_timezone(os.environ.get('NPU_MONITOR_TIMEZONE', 'auto'))
+REPORT_TIMEZONE_OFFSET_SECONDS = timezone_offset_seconds(REPORT_TIMEZONE)
+REPORT_TIMEZONE_NAME = timezone_label(REPORT_TIMEZONE_OFFSET_SECONDS)
 
 
 def validate():

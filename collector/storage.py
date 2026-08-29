@@ -611,7 +611,7 @@ class CollectorStorage:
         }
 
     def utilization_report(
-            self, start_epoch, end_epoch, utc_offset_seconds=28800,
+            self, start_epoch, end_epoch, utc_offset_seconds=0,
             node_id=None, cluster_id=None):
         filters = ['c.collected_epoch >= ?', 'c.collected_epoch < ?']
         parameters = [
